@@ -52,6 +52,9 @@ data/
 Thumbs.db
 desktop.ini
 
+# WorkBuddy (personal workspace data)
+.workbuddy/
+
 # Logs
 *.log
 logs/
