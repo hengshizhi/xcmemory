@@ -13,6 +13,7 @@ import torch
 import torch.nn.functional as F
 
 from ..basic_crud import VecDBCRUD
+from ..basic_crud.vec_db_crud import EmbeddingMode
 from ..auxiliary_query import SQLDatabase
 from ..embedding_coder import QuerySlots
 from ..vector_db.reranker import ProbabilitySampler
@@ -56,6 +57,7 @@ class LifecycleManager:
         top_k: int = 20,
         sample_size: int = 5,
         sigma: float = None,
+        enable_interest_mode: bool = True,
     ):
         """
         初始化 LifecycleManager
@@ -66,12 +68,15 @@ class LifecycleManager:
             top_k: 被动回忆时检索的候选数量
             sample_size: 被动回忆后采样的记忆数量
             sigma: 概率采样的正态分布标准差（None=自适应）
+            enable_interest_mode: 是否启用兴趣模式，False 时降级为 2 值融合
         """
         self._vec_db = vec_db
         self._sql_db = sql_db
         self._top_k = top_k
         self._sample_size = sample_size
+        self._sigma = sigma
         self._sampler = ProbabilitySampler(sigma=sigma)
+        self._enable_interest_mode = enable_interest_mode
 
     # =========================================================================
     # 核心 API
@@ -125,29 +130,32 @@ class LifecycleManager:
         # Step 4: 计算 current_duration
         current_duration = self._compute_current_duration(sampled_lifecycles, sample_weights)
 
-        # Step 5: 计算 interest_duration
-        interest_duration = self._compute_interest_duration(query_slots)
-
-        # Step 6: 概率融合（对应 DESIGN §2 的三种 Duration）
-        # duration_inputs 顺序: [current_d, interest_d, reference_d]
-        lifecycle = self._fuse_durations(
-            duration_inputs={
+        # Step 5: 概率融合
+        # enable_interest_mode=False 时降级为 2 值融合（跳过 interest_duration）
+        if self._enable_interest_mode:
+            interest_duration = self._compute_interest_duration(query_slots)
+            duration_inputs = {
                 "current_d": current_duration,
                 "interest_d": interest_duration,
                 "reference_d": float(reference_duration),
-            },
-        )
+            }
+        else:
+            duration_inputs = {
+                "current_d": current_duration,
+                "reference_d": float(reference_duration),
+            }
+
+        lifecycle = self._fuse_durations(duration_inputs=duration_inputs)
         lifecycle = int(max(1, lifecycle))
 
-        # Step 7: 更新被动回忆到的老记忆的生命周期
-        # 注意：interest_duration 复用 Step 5 的结果，不重算
-        # 注意：sampled_candidates 含 sample_weight，用于决定 w 的权重
-        self._update_existing_lifecycles(
-            candidates=candidates,
-            sampled_candidates=sampled_candidates,
-            interest_duration_new=interest_duration,
-            new_lifecycle=lifecycle,
-        )
+        # Step 6: 更新被动回忆到的老记忆的生命周期
+        if self._enable_interest_mode:
+            self._update_existing_lifecycles(
+                candidates=candidates,
+                sampled_candidates=sampled_candidates,
+                interest_duration_new=interest_duration,
+                new_lifecycle=lifecycle,
+            )
 
         return lifecycle
 
@@ -155,7 +163,7 @@ class LifecycleManager:
         self,
         candidates,
         sampled_candidates: List[Dict],
-        interest_duration_new: float,
+        interest_duration_new: Optional[float],
         new_lifecycle: int,
     ) -> List[Tuple[str, int, int]]:
         """
@@ -164,21 +172,23 @@ class LifecycleManager:
         由 decide_new_lifecycle 调用，复用其已搜索到的 candidates 和已计算的 interest_duration_new。
 
         计算公式：
-            ratio = old_lc / new_lc
-            f = sqrt(ratio)  --  老记忆比新记忆弱时削弱，强时增强
+            ratio = old_lc / ref_lc
+            f = sqrt(ratio)  --  老记忆比 ref_lc 弱时削弱，强时增强
             w = sampled_prob  --  采样权重（离群点权重小，典型记忆权重大）
 
-            new_lc = old_lc * (1 - w) + new_lc * f * w
+            new_lc = old_lc * (1 - w) + ref_lc * f * w
 
         Args:
             candidates: 被动回忆结果（已在 decide_new_lifecycle 中搜索）
             sampled_candidates: 采样结果（含 sample_weight，来自 ProbabilitySampler.sample）
-            interest_duration_new: 新记忆的查询句兴趣强度（已在 decide_new_lifecycle 中计算）
+            interest_duration_new: 新记忆的查询句兴趣强度（None=非兴趣模式，跳过 interest 计算）
             new_lifecycle: 新记忆的生命周期
 
         Returns:
             [(memory_id, old_lifecycle, new_lifecycle), ...] 更新详情
         """
+        use_interest = self._enable_interest_mode and interest_duration_new is not None
+
         # 构建 memory_id -> sample_weight 的映射
         sample_weight_map = {
             s["memory_id"]: s["sample_weight"] for s in sampled_candidates
@@ -208,12 +218,7 @@ class LifecycleManager:
             if memory is None:
                 continue
 
-            # Step 3: 计算 interest_duration_old（暂保留，不参与新公式计算）
-            old_slots = self._vec_db._slots_from_sentence(memory.query_sentence)
-            interest_duration_old = self._compute_interest_duration_from_slots(old_slots)
-
-            # Step 4: 计算 current_duration_old（用于 f 函数中的 ratio 参考）
-            # 收集所有老记忆的生命周期 + 新记忆的生命周期
+            # Step 3: 计算 current_duration_old（用于 f 函数中的 ratio 参考）
             n = len(finite_candidates)
             a = self._sample_size / n if n > 0 else 1.0
 
@@ -225,16 +230,28 @@ class LifecycleManager:
 
             current_duration_old = self._compute_current_duration(all_lifecycles, all_probs)
 
-            # Step 5: 计算老记忆的目标 lifecycle（作为 f 函数的输入参考）
-            ref_lc = self._fuse_durations(
-                duration_inputs={
-                    "interest_d_old": interest_duration_old,
-                    "current_d_old": current_duration_old,
-                    "interest_d_new": interest_duration_new,
-                },
-            )
+            # Step 4: 概率融合得到 ref_lc
+            if use_interest:
+                # 3 值融合：interest_d_old + current_d_old + interest_d_new
+                old_slots = self._vec_db._slots_from_sentence(memory.query_sentence)
+                interest_duration_old = self._compute_interest_duration_from_slots(old_slots)
+                ref_lc = self._fuse_durations(
+                    duration_inputs={
+                        "interest_d_old": interest_duration_old,
+                        "current_d_old": current_duration_old,
+                        "interest_d_new": interest_duration_new,
+                    },
+                )
+            else:
+                # 2 值融合：current_d_old + reference（用 new_lifecycle 作为参考值）
+                ref_lc = self._fuse_durations(
+                    duration_inputs={
+                        "current_d_old": current_duration_old,
+                        "reference_d": float(new_lifecycle),
+                    },
+                )
 
-            # Step 6: 计算 new_lc（基于用户指定的新公式）
+            # Step 5: 计算 new_lc（基于用户指定的新公式）
             #   ratio = old_lc / ref_lc
             #   f = sqrt(ratio)
             #   w = sampled_prob
@@ -307,7 +324,7 @@ class LifecycleManager:
         candidates = self._vec_db.search_fullspace(
             query_slots=query_slots_dict,
             top_k=self._top_k,
-            embedding_mode="interest",
+            embedding_mode=EmbeddingMode.INTEREST if self._enable_interest_mode else EmbeddingMode.RAW,
             use_slot_rerank=False,
         )
 
@@ -348,6 +365,13 @@ class LifecycleManager:
                 })
 
         # Step 6: 遍历每条老记忆，计算并更新其生命周期
+        # 提前计算 accessed 记忆的兴趣强度（每轮共用）
+        if self._enable_interest_mode:
+            accessed_slots = self._vec_db._slots_from_sentence(accessed_memory.query_sentence)
+            interest_duration_accessed = self._compute_interest_duration_from_slots(accessed_slots)
+        else:
+            interest_duration_accessed = None
+
         update_details = []
         for cand in finite_candidates:
             old_memory_id = cand["memory_id"]
@@ -358,13 +382,6 @@ class LifecycleManager:
             old_memory = self._vec_db._kv_read(old_memory_id)
             if old_memory is None:
                 continue
-
-            # 计算 interest_duration_old
-            old_slots = self._vec_db._slots_from_sentence(old_memory.query_sentence)
-            interest_duration_old = self._compute_interest_duration_from_slots(old_slots)
-
-            # 计算 interest_duration_accessed（被访问记忆的兴趣强度）
-            interest_duration_accessed = self._compute_interest_duration_from_slots(accessed_slots)
 
             # 计算 current_duration_old
             n = len(finite_candidates)
@@ -378,14 +395,26 @@ class LifecycleManager:
 
             current_duration_old = self._compute_current_duration(all_lifecycles, all_probs)
 
-            # Step 7: 计算 interim_new_lc（_update_existing_lifecycles 同款公式）
-            ref_lc = self._fuse_durations(
-                duration_inputs={
-                    "interest_d_old": interest_duration_old,
-                    "current_d_old": current_duration_old,
-                    "interest_d_new": interest_duration_accessed,
-                },
-            )
+            # Step 7: 概率融合得到 ref_lc
+            if self._enable_interest_mode and interest_duration_accessed is not None:
+                # 3 值融合
+                old_slots = self._vec_db._slots_from_sentence(old_memory.query_sentence)
+                interest_duration_old = self._compute_interest_duration_from_slots(old_slots)
+                ref_lc = self._fuse_durations(
+                    duration_inputs={
+                        "interest_d_old": interest_duration_old,
+                        "current_d_old": current_duration_old,
+                        "interest_d_new": interest_duration_accessed,
+                    },
+                )
+            else:
+                # 2 值融合：current_d_old + reference（用 accessed_lc 作为参考）
+                ref_lc = self._fuse_durations(
+                    duration_inputs={
+                        "current_d_old": current_duration_old,
+                        "reference_d": float(accessed_lc),
+                    },
+                )
 
             if ref_lc > 0:
                 ratio = old_lc / ref_lc
@@ -863,25 +892,28 @@ class LifecycleManager:
         duration_inputs: Dict[str, float],
     ) -> float:
         """
-        概率融合三种 Duration（解析版）
+        概率融合 2-3 种 Duration（解析版，自动适应）
 
         步骤：
-        1. 对三种 Duration 做 log-softmax 归一化（消除量纲差异）
+        1. 对 Duration 做 log-softmax 归一化（消除量纲差异）
         2. 再做一次 softmax 得到概率分布（和=1）
         3. 加权求和得到最终生命周期
 
-        支持两组语义（通过 duration_inputs 中的 key 区分）：
-        - decide_new_lifecycle:  {"current_d", "interest_d", "reference_d"}
-        - update_existing_lifecycles: {"interest_d_old", "current_d_old", "interest_d_new"}
+        支持：
+        - decide_new_lifecycle（兴趣模式）:  {"current_d", "interest_d", "reference_d"}（3值）
+        - decide_new_lifecycle（非兴趣模式）: {"current_d", "reference_d"}（2值）
+        - update_existing_lifecycles: {"interest_d_old", "current_d_old", "interest_d_new"}（3值）
+        - update_existing（无兴趣数据时）: {"current_d_old", "reference_d"}（2值）
 
         Args:
-            duration_inputs: 三种 Duration 的字典，必须恰好包含 3 个值
+            duration_inputs: 2-3 种 Duration 的字典
 
         Returns:
             融合后的生命周期值
         """
-        if len(duration_inputs) != 3:
-            raise ValueError(f"duration_inputs 必须包含 3 个值，当前: {list(duration_inputs.keys())}")
+        n = len(duration_inputs)
+        if n not in (2, 3):
+            raise ValueError(f"duration_inputs 必须包含 2 或 3 个值，当前: {list(duration_inputs.keys())}")
 
         # 按固定顺序取出值
         durations_list = list(duration_inputs.values())

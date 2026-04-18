@@ -187,12 +187,13 @@ class MemorySystem:
             slot_dim=64,
         )
 
-        # LifecycleManager
+        # LifecycleManager（复用 MemorySystem 的 enable_interest_mode）
         self._lifecycle_mgr = LifecycleManager(
             vec_db=self._vec_db,
             sql_db=sql_db,
             top_k=20,
             sample_size=5,
+            enable_interest_mode=self.enable_interest_mode,
         )
 
         self._initialized = True
@@ -320,8 +321,8 @@ class MemorySystem:
         # 过滤 None 值
         slot_dict = {k: v for k, v in slot_dict.items() if v}
 
-        # 如果启用兴趣模式，用 LifecycleManager 决定生命周期
-        if self.enable_interest_mode:
+        # 如果有 LifecycleManager（无论是否启用兴趣模式），用它决定生命周期
+        if self._lifecycle_mgr is not None:
             lifecycle = self._lifecycle_mgr.decide_new_lifecycle(
                 query_slots=slot_dict,
                 reference_duration=lifecycle,
@@ -892,7 +893,7 @@ class MemorySystem:
             [(memory_id, old_lifecycle, new_lifecycle), ...] 更新详情
         """
         self._check_initialized()
-        if not self.enable_interest_mode:
+        if self._lifecycle_mgr is None:
             return []
         return self._lifecycle_mgr.on_memory_accessed(memory_id)
 
