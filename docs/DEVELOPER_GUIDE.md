@@ -17,12 +17,14 @@
 ## 1. 项目结构
 
 ```
-models/xcmemory_interest/
-├── __init__.py              # 模块入口，导出主要接口
-├── config.py                # 配置参数
-├── user_manager.py          # 用户鉴权核心
-│
-├── basic_crud/              # 向量数据库 CRUD
+xcmemory_interest/
+src/
+└── xcmemory_interest/       # 源码包
+    ├── __init__.py              # 模块入口，导出主要接口
+    ├── config.py                # 配置参数
+    ├── user_manager.py          # 用户鉴权核心
+    │
+    ├── basic_crud/              # 向量数据库 CRUD
 │   ├── __init__.py
 │   ├── vec_db_crud.py      # VecDBCRUD 主类
 │   ├── basic_crud.py       # 基础 CRUD（旧版）
@@ -432,13 +434,13 @@ class NewSearcher:
 
 ```bash
 # 运行所有测试
-o:/project/starlate/venv/Scripts/python.exe -m pytest tests/ -v
+o:/project/xcmemory_interest/venv/Scripts/python.exe -m pytest tests/ -v
 
 # 运行特定模块测试
-o:/project/starlate/venv/Scripts/python.exe -m pytest tests/test_mql.py -v
+o:/project/xcmemory_interest/venv/Scripts/python.exe -m pytest tests/test_mql.py -v
 
 # 运行示例脚本
-o:/project/starlate/venv/Scripts/python.exe demo_mql_auth.py
+o:/project/xcmemory_interest/venv/Scripts/python.exe demo_mql_auth.py
 ```
 
 ### 6.2 编写测试

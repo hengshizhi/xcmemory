@@ -33,8 +33,8 @@
 ### 2.1 安装依赖
 
 ```bash
-cd o:/project/starlate
-o:/project/starlate/venv/Scripts/pip.exe install -r requirements.txt
+cd o:/project/xcmemory_interest
+o:/project/xcmemory_interest/venv/Scripts/pip.exe install -e .
 ```
 
 ### 2.2 最简使用
