@@ -183,17 +183,17 @@ result = system.execute(mql: str) -> MQLResult
 memory_id = system.insert(
     query_sentence: str,
     content: str,
-    lifecycle: int,
+    lifecycle: int = None,
 ) -> str
 ```
 
-插入记忆。
+插入记忆。`lifecycle` 为可选参数，传入 `None` 或省略时由 LifecycleManager 根据查询句自动决定。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `query_sentence` | `str` | 6 槽位查询句 |
 | `content` | `str` | 记忆内容 |
-| `lifecycle` | `int` | 生命周期（秒） |
+| `lifecycle` | `int` | 可选。生命周期秒数，`None` 时由 LifecycleManager 决定 |
 
 #### `search()`
 

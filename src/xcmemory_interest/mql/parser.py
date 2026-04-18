@@ -3,10 +3,13 @@ MQL - Memory Query Language 语法分析器
 
 支持的操作：
 - SELECT ... FROM memories WHERE ... [VERSION v1] [LIMIT n]
-- INSERT INTO memories VALUES (query_sentence, content, lifecycle)
+- INSERT INTO memories VALUES (query_sentence, content) 或 (query_sentence, content, lifecycle)
 - UPDATE memories SET field=value,... WHERE condition
 - DELETE FROM memories WHERE condition
 - 向量搜索：WHERE [slot=value,...] SEARCH TOPK n
+
+注意：INSERT 语句中 lifecycle 参数为可选。省略或传入 NULL 时，LifecycleManager 会根据
+查询句内容和相关记忆的被动回忆结果自动决定生命周期（需要在 enable_interest_mode=True 下）。
 
 系统管理：
 - CREATE DATABASE name
@@ -61,7 +64,7 @@ class InsertStatement(ASTNode):
     """INSERT 语句"""
     query_sentence: str  # 格式: <time><subject><action><object><purpose><result>
     content: str = ""
-    lifecycle: int = 86400
+    lifecycle: Optional[int] = None  # None=由 LifecycleManager 决定，不指定具体值
 
 
 @dataclass
@@ -434,7 +437,7 @@ class Parser:
             raise ParseError("INSERT requires query_sentence", self.current)
 
         content = values[1] if len(values) >= 2 else ""
-        lifecycle = values[2] if len(values) >= 3 else 86400
+        lifecycle = values[2] if len(values) >= 3 else None  # None → 让 LifecycleManager 决定
 
         return InsertStatement(
             query_sentence=query_sentence,

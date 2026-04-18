@@ -248,11 +248,12 @@ class Interpreter:
         query_sentence = self._strip_quotes(stmt.query_sentence)
         content = self._strip_quotes(stmt.content)
 
-        mid = mem.write(
-            query_sentence=query_sentence,
-            content=content,
-            lifecycle=stmt.lifecycle,
-        )
+        # lifecycle=None 时由 LifecycleManager 决定（需要 enable_interest_mode=True）
+        write_kwargs = {"query_sentence": query_sentence, "content": content}
+        if stmt.lifecycle is not None:
+            write_kwargs["lifecycle"] = stmt.lifecycle
+
+        mid = mem.write(**write_kwargs)
 
         return QueryResult(
             type="insert",
