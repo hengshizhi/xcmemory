@@ -248,10 +248,10 @@ class Interpreter:
         query_sentence = self._strip_quotes(stmt.query_sentence)
         content = self._strip_quotes(stmt.content)
 
-        # lifecycle=None 时由 LifecycleManager 决定（需要 enable_interest_mode=True）
+        # reference_duration=None 时由 LifecycleManager 决定（用默认 86400）
         write_kwargs = {"query_sentence": query_sentence, "content": content}
-        if stmt.lifecycle is not None:
-            write_kwargs["lifecycle"] = stmt.lifecycle
+        if stmt.reference_duration is not None:
+            write_kwargs["reference_duration"] = stmt.reference_duration
 
         mid = mem.write(**write_kwargs)
 

@@ -3,13 +3,13 @@ MQL - Memory Query Language 语法分析器
 
 支持的操作：
 - SELECT ... FROM memories WHERE ... [VERSION v1] [LIMIT n]
-- INSERT INTO memories VALUES (query_sentence, content) 或 (query_sentence, content, lifecycle)
+- INSERT INTO memories VALUES (query_sentence, content) 或 (query_sentence, content, reference_duration)
 - UPDATE memories SET field=value,... WHERE condition
 - DELETE FROM memories WHERE condition
 - 向量搜索：WHERE [slot=value,...] SEARCH TOPK n
 
-注意：INSERT 语句中 lifecycle 参数为可选。省略或传入 NULL 时，LifecycleManager 会根据
-查询句内容和相关记忆的被动回忆结果自动决定生命周期（需要在 enable_interest_mode=True 下）。
+注意：INSERT 语句中 reference_duration 参数为可选。省略或传入 NULL 时，LifecycleManager 会用
+默认参考值 86400 参与生命周期决策（无论 enable_interest_mode 是否启用）。
 
 系统管理：
 - CREATE DATABASE name
@@ -64,7 +64,8 @@ class InsertStatement(ASTNode):
     """INSERT 语句"""
     query_sentence: str  # 格式: <time><subject><action><object><purpose><result>
     content: str = ""
-    lifecycle: Optional[int] = None  # None=由 LifecycleManager 决定，不指定具体值
+    lifecycle: Optional[int] = None  # 已废弃，请使用 reference_duration
+    reference_duration: Optional[int] = None  # 参考生命周期，由 LifecycleManager 决策（None=用默认值 86400）
 
 
 @dataclass
@@ -437,12 +438,12 @@ class Parser:
             raise ParseError("INSERT requires query_sentence", self.current)
 
         content = values[1] if len(values) >= 2 else ""
-        lifecycle = values[2] if len(values) >= 3 else None  # None → 让 LifecycleManager 决定
+        reference_duration = values[2] if len(values) >= 3 else None  # None → 让 LifecycleManager 决定（用默认 86400）
 
         return InsertStatement(
             query_sentence=query_sentence,
             content=content,
-            lifecycle=lifecycle,
+            reference_duration=reference_duration,
         )
 
     def _parseUpdate(self) -> UpdateStatement:

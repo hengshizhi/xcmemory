@@ -270,7 +270,7 @@ class MemorySystem:
         self,
         query_sentence: str,
         content: str = "",
-        lifecycle: int = 86400,
+        reference_duration: int = None,
         time_word: str = None,
         created_at: datetime = None,
     ) -> str:
@@ -280,7 +280,7 @@ class MemorySystem:
         Args:
             query_sentence: 查询句 "<时间><主体><动作><宾语><目的><结果>"
             content: 记忆内容（可留空）
-            lifecycle: 生命周期（秒），默认 1 天
+            reference_duration: 参考生命周期（秒），传给 LifecycleManager 决策用；None 时用默认 86400
             time_word: 时间词（从查询句自动提取，可覆盖）
             created_at: 创建时间（默认当前时间）
 
@@ -322,18 +322,21 @@ class MemorySystem:
         slot_dict = {k: v for k, v in slot_dict.items() if v}
 
         # 如果有 LifecycleManager（无论是否启用兴趣模式），用它决定生命周期
+        # reference_duration 为 None 时 LifecycleManager 会用默认值 86400
         if self._lifecycle_mgr is not None:
-            lifecycle = self._lifecycle_mgr.decide_new_lifecycle(
+            decided_lifecycle = self._lifecycle_mgr.decide_new_lifecycle(
                 query_slots=slot_dict,
-                reference_duration=lifecycle,
+                reference_duration=reference_duration if reference_duration is not None else 86400,
             )
+        else:
+            decided_lifecycle = reference_duration if reference_duration is not None else 86400
 
         # 写入 VecDBCRUD
         embedding_mode = EmbeddingMode.INTEREST if self.enable_interest_mode else EmbeddingMode.RAW
         memory_id = self._vec_db.write(
             query_sentence=query_sentence,
             content=content,
-            lifecycle=lifecycle,
+            lifecycle=decided_lifecycle,
             embedding_mode=embedding_mode,
         )
 
