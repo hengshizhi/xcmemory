@@ -20,8 +20,8 @@
 ### 安装
 
 ```bash
-cd o:/project/starlate
-o:/project/starlate/venv/Scripts/pip.exe install -r requirements.txt
+cd o:/project/xcmemory_interest
+o:/project/xcmemory_interest/venv/Scripts/pip.exe install -e .
 ```
 
 ### Python API
@@ -75,22 +75,29 @@ server.start()
 ## 项目结构
 
 ```
-models/xcmemory_interest/
-├── basic_crud/          # 向量数据库 CRUD
-├── vector_db/           # Chroma 向量数据库封装
-├── embedding_coder/     # 查询句嵌入编码（InterestEncoder）
-├── auxiliary_query/     # 辅助查询（索引 + 调度）
-├── lifecycle_manager/   # 生命周期管理
-├── version_control/     # 版本控制
-├── mql/                 # MQL 查询语言
-├── pyapi/               # Python 应用层封装
-├── netapi/              # HTTP/WS API
-├── graph_query/         # 图查询
-├── online_learning/     # 在线学习
-└── docs/                # 文档
-    ├── USER_GUIDE.md
-    ├── DEVELOPER_GUIDE.md
-    └── API_REFERENCE.md
+xcmemory_interest/
+├── src/xcmemory_interest/   # 源码包
+│   ├── __init__.py
+│   ├── config.py            # 配置
+│   ├── user_manager.py      # 用户管理
+│   ├── basic_crud/          # 向量数据库 CRUD
+│   ├── vector_db/           # Chroma 向量数据库封装
+│   ├── embedding_coder/     # 查询句嵌入编码（InterestEncoder）
+│   ├── auxiliary_query/    # 辅助查询（索引 + 调度）
+│   ├── lifecycle_manager/   # 生命周期管理
+│   ├── version_control/     # 版本控制
+│   ├── mql/                 # MQL 查询语言
+│   ├── pyapi/               # Python 应用层封装
+│   ├── netapi/              # HTTP/WS API
+│   ├── graph_query/         # 图查询
+│   ├── online_learning/     # 在线学习
+│   └── docs/                # 文档
+│       ├── USER_GUIDE.md
+│       ├── DEVELOPER_GUIDE.md
+│       └── API_REFERENCE.md
+├── venv/                    # Python 虚拟环境
+├── pyproject.toml
+└── README.md
 ```
 
 ## MQL 示例
