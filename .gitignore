@@ -62,3 +62,5 @@ logs/
 # Temporary
 tmp/
 temp/
+/text2mem-main
+/memU-main

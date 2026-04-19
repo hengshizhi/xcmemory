@@ -224,12 +224,14 @@ class APIServer:
         host: str = "0.0.0.0",
         port: int = 8080,
         ws_port: Optional[int] = None,
+        debug: bool = False,
     ):
         self.database_root = Path(database_root)
         self.database_root.mkdir(parents=True, exist_ok=True)
         self.host = host
         self.port = port
         self.ws_port = ws_port or (port + 1)  # 默认 WebSocket 端口 = HTTP 端口 + 1
+        self.debug = debug
 
         # 用户管理器
         self.user_manager = UserManager(str(self.database_root))
@@ -293,7 +295,33 @@ class APIServer:
 
     def _authenticate(self, request: HTTPRequest) -> AuthContext:
         """认证请求"""
-        api_key = request.headers.get("X-API-Key", "")
+        import sys
+        # 尝试多种可能的头部名称变体
+        header_candidates = [
+            "X-Api-Key",      # 实际观察到的 header（单数 Api）
+            "x-api-key",      # 全小写（规范化后）
+            "X-API-Key",      # 标准格式
+            "x-apikey",       # 无连字符
+            "X-Apikey",       # 无连字符大写
+        ]
+        
+        api_key = ""
+        for candidate in header_candidates:
+            api_key = request.headers.get(candidate, "")
+            if api_key:
+                if self.debug:
+                    sys.stderr.write(
+                        f"[netapi DEBUG] found header '{candidate}' with key: {api_key[:20]}...\n"
+                    )
+                    sys.stderr.flush()
+                break
+
+        if self.debug and not api_key:
+            sys.stderr.write(
+                f"[netapi DEBUG] auth headers: {list(request.headers.keys())} | "
+                f"no API key found in any candidate header\n"
+            )
+            sys.stderr.flush()
 
         if not api_key:
             if request.query_params:
@@ -303,6 +331,9 @@ class APIServer:
             raise AuthRequiredError()
 
         result = self.user_manager.authenticate(api_key)
+        if self.debug:
+            sys.stderr.write(f"[netapi DEBUG] auth result: {result}\n")
+            sys.stderr.flush()
         if not result.success:
             raise APIError(result.error or "Authentication failed", status_code=401)
 
@@ -375,6 +406,11 @@ class APIServer:
                 body=json.dumps({"error": e.message}),
             )
         except Exception as e:
+            if self.debug:
+                import sys, traceback
+                sys.stderr.write(f"[netapi DEBUG] Unhandled exception: {e}\n")
+                traceback.print_exc(file=sys.stderr)
+                sys.stderr.flush()
             return HTTPResponse(
                 status_code=500,
                 body=json.dumps({"error": str(e)}),
@@ -885,6 +921,7 @@ class APIServer:
                 self.send_response(200)
 
             def _handle(self):
+                import sys as _sys
                 content_length = int(self.headers.get("Content-Length", 0))
                 body = self.rfile.read(content_length).decode("utf-8") if content_length else ""
 
@@ -898,10 +935,19 @@ class APIServer:
                 else:
                     path = self.path
 
+                # headers 字典键名为小写（email.message.EmailMessage 规范化的）
+                raw_headers = dict(self.headers)
+                if getattr(self.server.server, 'debug', False):
+                    _sys.stderr.write(
+                        f"[netapi DEBUG] headers.keys()={list(raw_headers.keys())} | "
+                        f"x-api-key={raw_headers.get('x-api-key', '(none)')[:30]}\n"
+                    )
+                    _sys.stderr.flush()
+
                 req = HTTPRequest(
                     method=self.command,
                     path=path,
-                    headers=dict(self.headers),
+                    headers=raw_headers,
                     body=body,
                     query_params=query_params,
                 )

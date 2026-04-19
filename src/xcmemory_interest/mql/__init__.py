@@ -57,7 +57,7 @@ from .parser import (
     SelectStatement, InsertStatement, UpdateStatement, DeleteStatement,
     Condition, SystemStatement, UserStatement
 )
-from .interpreter import Interpreter, QueryResult
+from .interpreter_extended import Interpreter, QueryResult
 
 __all__ = [
     # 版本

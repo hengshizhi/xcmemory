@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 
 from .parser import (
     ASTNode, SelectStatement, InsertStatement,
-    UpdateStatement, DeleteStatement, Condition
+    UpdateStatement, DeleteStatement, Condition,
+    SystemStatement, UserStatement
 )
 from .errors import ExecutionError
 
@@ -114,7 +115,12 @@ class Interpreter:
         auth = self._get_auth_context()
         if auth is None:
             return True  # 无认证上下文时放行
-        return auth.has_permission(system_name, permission)
+        from ..user_manager import PermissionType
+        try:
+            perm = PermissionType(permission)
+        except ValueError:
+            perm = PermissionType.READ  # fallback
+        return auth.has_permission(system_name, perm)
 
     def _check_system_access(self, system_name: str, require_write: bool = False) -> bool:
         """检查系统访问权限"""
@@ -187,19 +193,8 @@ class Interpreter:
 
         # 获取字段值
         if field in ["time", "subject", "action", "object", "purpose", "result"]:
-            # 从 query_sentence 解析
-            if field == "time":
-                field_value = memory.get("_slot_time", "")
-            elif field == "subject":
-                field_value = memory.get("_slot_subject", "")
-            elif field == "action":
-                field_value = memory.get("_slot_action", "")
-            elif field == "object":
-                field_value = memory.get("_slot_object", "")
-            elif field == "purpose":
-                field_value = memory.get("_slot_purpose", "")
-            elif field == "result":
-                field_value = memory.get("_slot_result", "")
+            # 从 query_sentence 解析的槽位值（无下划线前缀）
+            field_value = memory.get(field, "")
         else:
             field_value = memory.get(field)
 
@@ -323,7 +318,7 @@ class Interpreter:
         mid = mem.write(
             query_sentence=query_sentence,
             content=content,
-            lifecycle=stmt.lifecycle,
+            reference_duration=stmt.lifecycle,
         )
 
         return QueryResult(
@@ -446,6 +441,8 @@ class Interpreter:
                 raise PermissionError(f"No permission to access system '{stmt.target}'")
 
             api.set_active_system(stmt.target)
+            # 绑定新的记忆系统
+            self.bind("mem", api.active_system)
             return QueryResult(
                 type="system",
                 message=f"Switched to database '{stmt.target}'",
@@ -455,20 +452,6 @@ class Interpreter:
             raise ExecutionError(f"Unknown system action: {stmt.action}")
 
 
-@dataclass
-class SystemStatement:
-    """系统管理语句"""
-    action: str  # create, drop, list, use
-    target: str  # 数据库名
-
-
-@dataclass
-class UserStatement:
-    """用户管理语句"""
-    action: str  # create, drop, grant, revoke, list
-    username: str = ""
-    target: str = ""  # system_name 或 permission
-    permission: str = ""
 
 
 class InterpreterExtended(Interpreter):
@@ -506,6 +489,8 @@ class InterpreterExtended(Interpreter):
                 raise PermissionError("Admin permission required to create databases")
 
             api.create_system(stmt.target, initialize=True)
+            # 创建后立即绑定新系统，确保后续语句操作正确的系统
+            self.bind("mem", api.active_system)
             return QueryResult(
                 type="system",
                 message=f"Created database '{stmt.target}'",
@@ -518,6 +503,8 @@ class InterpreterExtended(Interpreter):
                 raise PermissionError("Admin permission required to drop databases")
 
             ok = api.delete_system(stmt.target)
+            # 删除后更新绑定（可能是 None 或切到别的系统）
+            self.bind("mem", api.active_system)
             return QueryResult(
                 type="system",
                 message=f"Dropped database '{stmt.target}'" if ok else f"Database '{stmt.target}' not found",
@@ -527,6 +514,7 @@ class InterpreterExtended(Interpreter):
             # LIST DATABASES
             systems = api.list_all_systems()
             # 过滤无权限的系统
+            auth = self._get_auth_context()
             if auth and not auth.is_superadmin:
                 allowed = set()
                 for sys_name in systems:
@@ -605,7 +593,7 @@ class InterpreterExtended(Interpreter):
             from ..user_manager import PermissionType
             ok, msg = um.grant_permission(
                 username=stmt.username,
-                system_name=stmt.target,
+                system_name=stmt.system_name,
                 permission=PermissionType(stmt.permission),
                 granted_by=auth.username,
             )
@@ -619,7 +607,7 @@ class InterpreterExtended(Interpreter):
             from ..user_manager import PermissionType
             ok, msg = um.revoke_permission(
                 username=stmt.username,
-                system_name=stmt.target,
+                system_name=stmt.system_name,
                 permission=PermissionType(stmt.permission),
             )
             return QueryResult(

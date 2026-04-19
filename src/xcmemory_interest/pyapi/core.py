@@ -1104,6 +1104,9 @@ class PyAPI:
         # 元数据路径
         self._meta_path = self.persist_directory / "systems_meta.json"
         self._load_meta()
+        # 恢复上次活跃的系统（如果有）
+        if self._last_active_system and self._last_active_system in self._systems_meta:
+            self.set_active_system(self._last_active_system)
 
     # =========================================================================
     # 元数据管理
@@ -1117,15 +1120,18 @@ class PyAPI:
                 with open(self._meta_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)
                     self._systems_meta = meta.get("systems", {})
+                    self._last_active_system: Optional[str] = meta.get("active_system")
             except Exception:
                 self._systems_meta = {}
+                self._last_active_system = None
         else:
             self._systems_meta = {}
+            self._last_active_system = None
 
     def _save_meta(self):
         """保存系统元数据"""
         import json
-        meta = {"systems": self._systems_meta}
+        meta = {"systems": self._systems_meta, "active_system": self._active_system}
         with open(self._meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
 
@@ -1190,6 +1196,7 @@ class PyAPI:
         self._active_system = name
 
         # 保存元数据
+        self._save_meta()
         self._set_system_meta(name, {
             "enable_interest_mode": enable_interest_mode,
             "similarity_threshold": similarity_threshold,
@@ -1277,6 +1284,7 @@ class PyAPI:
         # 更新活跃系统
         if self._active_system == name:
             self._active_system = next(iter(self._systems.keys()), None)
+            self._save_meta()
 
         return True
 
@@ -1291,7 +1299,7 @@ class PyAPI:
 
     def list_all_systems(self) -> List[Dict[str, Any]]:
         """
-        列出所有记忆系统的详细信息
+        列出所有记忆系统的详细信息（包括已持久化但未加载到内存的）
 
         Returns:
             [{"name": xxx, "enable_interest_mode": xxx, "created_at": xxx, ...}, ...]
@@ -1301,7 +1309,7 @@ class PyAPI:
                 "name": name,
                 **self._get_system_meta(name),
             }
-            for name in self._systems.keys()
+            for name in self._systems_meta.keys()
         ]
 
     def set_active_system(self, name: str):
@@ -1315,8 +1323,25 @@ class PyAPI:
             ValueError: 系统不存在
         """
         if name not in self._systems:
-            raise ValueError(f"记忆系统 '{name}' 不存在")
+            # 检查元数据，如果存在则加载系统
+            if name in self._systems_meta:
+                meta = self._systems_meta[name]
+                enable_interest_mode = meta.get("enable_interest_mode", False)
+                similarity_threshold = meta.get("similarity_threshold", 0.85)
+                # 创建 MemorySystem 实例
+                system = MemorySystem(
+                    name=name,
+                    persist_directory=str(self.persist_directory),
+                    vocab_size=self.vocab_size,
+                    enable_interest_mode=enable_interest_mode,
+                    similarity_threshold=similarity_threshold,
+                )
+                system.initialize()
+                self._systems[name] = system
+            else:
+                raise ValueError(f"记忆系统 '{name}' 不存在")
         self._active_system = name
+        self._save_meta()
 
     @property
     def active_system(self) -> Optional[MemorySystem]:

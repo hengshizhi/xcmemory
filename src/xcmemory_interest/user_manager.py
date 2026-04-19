@@ -220,6 +220,25 @@ class UserManager:
         finally:
             conn.close()
 
+    def set_admin_api_key(self, api_key: str) -> None:
+        """
+        设置超级管理员的 APIKey（用于首次启动时自动生成密钥）。
+
+        Args:
+            api_key: 完整的 APIKey（格式：xi-admin-<random>）
+        """
+        api_key_hash = self._hash_api_key(api_key)
+        now = datetime.now().isoformat()
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                "UPDATE users SET api_key_hash = ?, updated_at = ? WHERE username = ?",
+                (api_key_hash, now, self.DEFAULT_ADMIN)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     # =========================================================================
     # 用户认证
     # =========================================================================
