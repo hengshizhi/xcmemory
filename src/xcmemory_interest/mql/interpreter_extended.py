@@ -38,6 +38,13 @@ class InterpreterExtended(Interpreter):
     - LIST USERS
     """
 
+    def _get_pyapi(self) -> "PyAPI":
+        """获取绑定的 PyAPI 实例（由 _exec_mql 绑定到 'api' 键）"""
+        api = self._context.get("api")
+        if api is None:
+            raise ExecutionError("No PyAPI bound. Use bind('api', pyapi_instance) first.")
+        return api
+
     def _execute_ast(self, ast: ASTNode) -> QueryResult:
         """执行 AST（扩展版）"""
         if isinstance(ast, SystemStatement):

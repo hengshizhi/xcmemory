@@ -79,6 +79,21 @@ class TokenType(Enum):
     DRYRUN = auto()
     DRY = auto()
     RUN = auto()
+    # 图查询关键字
+    GRAPH = auto()
+    EXPAND = auto()
+    NEIGHBORS = auto()
+    PATH = auto()
+    CONNECTED = auto()
+    VALUE_CHAIN = auto()
+    HOPS = auto()
+    MIN_SHARED = auto()
+    SLOTS = auto()
+    # 函数包装
+    WRAP = auto()
+    FUNC = auto()
+    DEFINE = auto()
+    AS = auto()
 
 
 KEYWORDS = {
@@ -129,6 +144,21 @@ KEYWORDS = {
     "dryrun": TokenType.DRYRUN,
     "dry": TokenType.DRY,
     "run": TokenType.RUN,
+    # 图查询
+    "graph": TokenType.GRAPH,
+    "expand": TokenType.EXPAND,
+    "neighbors": TokenType.NEIGHBORS,
+    "path": TokenType.PATH,
+    "connected": TokenType.CONNECTED,
+    "value_chain": TokenType.VALUE_CHAIN,
+    "hops": TokenType.HOPS,
+    "min_shared": TokenType.MIN_SHARED,
+    "slots": TokenType.SLOTS,
+    # 函数包装
+    "wrap": TokenType.WRAP,
+    "func": TokenType.FUNC,
+    "define": TokenType.DEFINE,
+    "as": TokenType.AS,
 }
 
 

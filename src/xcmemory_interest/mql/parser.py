@@ -49,6 +49,16 @@ class ASTNode:
 
 
 @dataclass
+class GraphClause(ASTNode):
+    """GRAPH 子句 - 对查询结果执行图扩展操作"""
+    operation: str  # EXPAND, NEIGHBORS, PATH, CONNECTED, VALUE_CHAIN
+    hops: int = 1  # 扩展跳数（用于 EXPAND/CONNECTED）
+    min_shared: int = 1  # 最少共享槽位数
+    target_id: Optional[str] = None  # 目标 memory_id（用于 PATH）
+    value_slots: Optional[List[str]] = None  # 槽位列表（用于 VALUE_CHAIN）
+
+
+@dataclass
 class SelectStatement(ASTNode):
     """SELECT 语句"""
     fields: List[str]  # 字段列表，* 表示所有
@@ -57,6 +67,8 @@ class SelectStatement(ASTNode):
     limit: Optional[int] = None  # LIMIT 子句
     search_slots: Dict[str, str] = field(default_factory=dict)  # 向量搜索槽位
     search_topk: int = 5  # 搜索 top_k
+    graph_clause: Optional[GraphClause] = None  # GRAPH 子句
+    wrapped_sql: Optional[str] = None  # WRAP(...) 包装的 SQL
 
 
 @dataclass
@@ -104,6 +116,16 @@ class UserStatement(ASTNode):
     username: str = ""
     system_name: str = ""  # for grant/revoke: the system name
     permission: str = ""  # for grant/revoke: the permission type
+
+
+@dataclass
+class DefineStatement(ASTNode):
+    """DEFINE 语句 - 定义命名查询（类似视图）
+    
+    语法：DEFINE view_name AS SELECT ...
+    """
+    name: str  # 视图名称
+    sql: str  # 完整的 SELECT 语句
 
 
 # ============================================================================
@@ -185,7 +207,12 @@ class Parser:
         return fields
 
     def _parseCondition(self) -> Condition:
-        """解析单个条件"""
+        """解析单个条件
+
+        支持两种写法：
+        - 显式槽位：WHERE subject='我' AND action='是'
+        - 跨槽位关键字：WHERE '恋人' AND '哥哥'   （field="" 表示匹配任意槽位）
+        """
         # 字段
         if self._match(TokenType.IDENTIFIER):
             field = self._advance().value.lower()
@@ -193,8 +220,13 @@ class Parser:
             # 向量搜索槽位模式: [slot=value, ...]
             self._advance()
             field = "search"
+        elif self._match(TokenType.STRING):
+            # 跨槽位 bare string：field="" 表示任意槽位
+            # 语法：WHERE '关键词' AND '另一个词'
+            value = self._advance().value
+            return Condition(field="", operator="any", value=value)
         else:
-            raise ParseError("Expected field name", self.current)
+            raise ParseError("Expected field name or bare string keyword", self.current)
 
         # 运算符
         if self._match(TokenType.LT):
@@ -342,6 +374,133 @@ class Parser:
             raise ParseError("Expected version number", self.current)
         return None
 
+    def _parseGraphClause(self) -> GraphClause:
+        """解析 GRAPH 操作子句
+
+        支持格式：
+          GRAPH EXPAND(HOPS n)
+          GRAPH EXPAND(HOPS n MIN_SHARED m)
+          GRAPH NEIGHBORS(MIN_SHARED m)
+          GRAPH PATH(TO 'memory_id')
+          GRAPH PATH(TO 'memory_id' MIN_SHARED m)
+          GRAPH CONNECTED(MIN_SHARED m)
+          GRAPH VALUE_CHAIN(SLOTS [slot1, slot2, ...])
+        """
+        self._expect(TokenType.GRAPH)
+
+        # 操作类型
+        if self._matchAdvance(TokenType.EXPAND):
+            op = "EXPAND"
+        elif self._matchAdvance(TokenType.NEIGHBORS):
+            op = "NEIGHBORS"
+        elif self._matchAdvance(TokenType.PATH):
+            op = "PATH"
+        elif self._matchAdvance(TokenType.CONNECTED):
+            op = "CONNECTED"
+        elif self._matchAdvance(TokenType.VALUE_CHAIN):
+            op = "VALUE_CHAIN"
+        else:
+            # GRAPH 后面直接跟括号也行：GRAPH(EXPAND HOPS 2)
+            if self._match(TokenType.LPAREN):
+                self._advance()
+                if self._matchAdvance(TokenType.EXPAND):
+                    op = "EXPAND"
+                elif self._matchAdvance(TokenType.NEIGHBORS):
+                    op = "NEIGHBORS"
+                elif self._matchAdvance(TokenType.PATH):
+                    op = "PATH"
+                elif self._matchAdvance(TokenType.CONNECTED):
+                    op = "CONNECTED"
+                elif self._matchAdvance(TokenType.VALUE_CHAIN):
+                    op = "VALUE_CHAIN"
+                else:
+                    raise ParseError(
+                        "Expected graph operation: EXPAND, NEIGHBORS, PATH, CONNECTED, VALUE_CHAIN",
+                        self.current,
+                    )
+            else:
+                raise ParseError(
+                    "Expected graph operation after GRAPH", self.current
+                )
+
+        # 解析参数字号
+        hops = 1
+        min_shared = 1
+        target_id = None
+        value_slots = None
+
+        if self._match(TokenType.LPAREN):
+            self._advance()
+            while not self._match(TokenType.RPAREN):
+                consumed = False  # 跟踪本轮是否成功消费了 token
+
+                if self._matchAdvance(TokenType.HOPS):
+                    consumed = True
+                    # 支持 HOPS=2 或 HOPS 2
+                    if self._matchAdvance(TokenType.EQ):
+                        hops = int(self._expect(TokenType.NUMBER).value)
+                    elif self._match(TokenType.NUMBER):
+                        hops = int(self._advance().value)
+                    else:
+                        raise ParseError("Expected number after HOPS", self.current)
+                elif self._matchAdvance(TokenType.MIN_SHARED):
+                    consumed = True
+                    if self._matchAdvance(TokenType.EQ):
+                        min_shared = int(self._expect(TokenType.NUMBER).value)
+                    elif self._match(TokenType.NUMBER):
+                        min_shared = int(self._advance().value)
+                    else:
+                        raise ParseError("Expected number after MIN_SHARED", self.current)
+                elif self._matchAdvance(TokenType.TO):
+                    consumed = True
+                    if self._match(TokenType.STRING):
+                        target_id = self._advance().value
+                    else:
+                        raise ParseError("Expected memory_id string after TO", self.current)
+                elif self._matchAdvance(TokenType.SLOTS):
+                    consumed = True
+                    # SLOTS [...] 或 SLOTS=[...]
+                    if self._matchAdvance(TokenType.EQ):
+                        pass  # EQ consumed
+                    self._expect(TokenType.LBRACKET)
+                    value_slots = []
+                    while not self._match(TokenType.RBRACKET):
+                        if self._match(TokenType.IDENTIFIER):
+                            slot_name = self._advance().value.lower()
+                            if slot_name not in self.SLOT_FIELDS:
+                                raise ParseError(f"Unknown slot: {slot_name}", self.current)
+                            value_slots.append(slot_name)
+                        else:
+                            raise ParseError("Expected slot name", self.current)
+                        if self._matchAdvance(TokenType.COMMA):
+                            continue
+                        if self._match(TokenType.RBRACKET):
+                            break
+                        # 非逗号非右括号，跳过
+                        self._advance()
+                    self._expect(TokenType.RBRACKET)
+
+                if not consumed:
+                    raise ParseError(
+                        "Expected parameter: HOPS, MIN_SHARED, TO, or SLOTS",
+                        self.current,
+                    )
+
+                # 逗号分隔，可选；遇到右括号自动退出
+                if not self._matchAdvance(TokenType.COMMA):
+                    if self._match(TokenType.RPAREN):
+                        break
+                    # 没逗号也不是右括号，说明是下一个参数，继续循环
+            self._expect(TokenType.RPAREN)
+
+        return GraphClause(
+            operation=op,
+            hops=hops,
+            min_shared=min_shared,
+            target_id=target_id,
+            value_slots=value_slots,
+        )
+
     def parse(self) -> ASTNode:
         """解析 SQL 语句"""
         if self._matchAdvance(TokenType.SELECT):
@@ -368,6 +527,8 @@ class Parser:
             return self._parseRevoke()
         elif self._matchAdvance(TokenType.GENERATE):
             return self._parseGenerateKey()
+        elif self._matchAdvance(TokenType.DEFINE):
+            return self._parseDefine()
         else:
             raise ParseError(f"Expected SQL statement, got {self.current.type}", self.current)
 
@@ -398,6 +559,40 @@ class Parser:
         # LIMIT
         limit = self._parseLimit()
 
+        # GRAPH 子句
+        graph_clause = None
+        if self._match(TokenType.GRAPH):
+            graph_clause = self._parseGraphClause()
+
+        # WRAP 包装语法
+        wrapped_sql = None
+        if self._match(TokenType.WRAP):
+            self._advance()
+            self._expect(TokenType.LPAREN)
+            # 收集括号内的完整 SQL 字符串，保留空格分隔
+            paren_depth = 1
+            parts = []
+            while paren_depth > 0 and self.current.type != TokenType.EOF:
+                if self.current.type == TokenType.LPAREN:
+                    paren_depth += 1
+                    parts.append(self._advance().value)
+                elif self.current.type == TokenType.RPAREN:
+                    paren_depth -= 1
+                    if paren_depth > 0:
+                        parts.append(self._advance().value)
+                    else:
+                        self._advance()  # 消耗最后的 )
+                        break
+                else:
+                    # 非括号token，加空格分隔避免连成一词
+                    token_val = self._advance().value
+                    if parts and not parts[-1].endswith(" ") and not parts[-1].endswith("("):
+                        parts.append(" ")
+                    parts.append(token_val)
+            if paren_depth != 0:
+                raise ParseError("Unmatched parentheses in WRAP", self.current)
+            wrapped_sql = "".join(parts).strip()
+
         return SelectStatement(
             fields=fields,
             conditions=conditions,
@@ -405,6 +600,8 @@ class Parser:
             limit=limit,
             search_slots=search_slots,
             search_topk=search_topk,
+            graph_clause=graph_clause,
+            wrapped_sql=wrapped_sql,
         )
 
     def _parseInsert(self) -> InsertStatement:
@@ -604,6 +801,31 @@ class Parser:
         self._expect(TokenType.FOR)
         username = self._expect(TokenType.IDENTIFIER).value
         return UserStatement(action="generate_key", username=username)
+
+    # =========================================================================
+    # 函数/视图定义
+    # =========================================================================
+
+    def _parseDefine(self) -> DefineStatement:
+        """解析 DEFINE 语句
+
+        语法：DEFINE view_name AS SELECT ...
+        注意：调用此方法时，DEFINE token 已被 parse() 中的 _matchAdvance 消耗
+        """
+        name = self._expect(TokenType.IDENTIFIER).value
+        self._expect(TokenType.AS)
+
+        # 收集剩余 token 直到分号（构建完整 SQL）
+        parts = []
+        while self.current.type not in (TokenType.EOF, TokenType.SEMICOLON):
+            parts.append(self.current.value)
+            self._advance()
+
+        sql = " ".join(parts).strip()
+        if self.current.type == TokenType.SEMICOLON:
+            self._advance()
+
+        return DefineStatement(name=name, sql=sql)
 
 
 def parse(sql: str) -> ASTNode:

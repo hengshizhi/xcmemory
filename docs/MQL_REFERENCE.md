@@ -546,3 +546,90 @@ SELECT * FROM memories WHERE [subject='我', action='学习'] SEARCH TOPK 10
 6. **权限控制**：非管理员用户只能访问已授权的系统，操作前需确认权限。
 
 7. **版本控制**：需要 VersionManager 初始化，否则 VERSION 子句无效。
+
+---
+
+## 图查询（GRAPH）
+
+`GRAPH` 是 MQL 的图扩展关键字，可对 SELECT 结果执行多跳关联扩展。
+
+### 语法
+
+```sql
+SELECT * FROM memories [WHERE ...] GRAPH <operation>(<params>)
+```
+
+### 支持的操作
+
+| 操作 | 说明 | 典型用法 |
+|------|------|----------|
+| `EXPAND(HOPS n)` | 从起始记忆出发，扩展 n 跳邻居 | 多跳探索 |
+| `NEIGHBORS(MIN_SHARED m)` | 获取直接相邻的记忆（共享 m 个以上槽位） | 找直接关联 |
+| `PATH(TO 'id' MIN_SHARED m)` | 查找到目标记忆的路径 | 路径发现 |
+| `CONNECTED(MIN_SHARED m)` | 获取所有连通记忆（不限跳数） | 整体关联 |
+| `VALUE_CHAIN(SLOTS [slot1,slot2,...])` | 沿槽位值链扩展搜索 | 值链追踪 |
+
+### 参数格式
+
+参数支持两种写法（等号可省略）：
+
+```sql
+GRAPH EXPAND(HOPS=2)        -- 带等号
+GRAPH EXPAND(HOPS 2)        -- 不带等号
+GRAPH PATH(TO 'mem_xxx' MIN_SHARED 1)
+```
+
+### 示例
+
+```sql
+-- 从"学 Python"的记忆出发，扩展2跳关联
+SELECT * FROM memories WHERE [subject='我', action='学习', object='Python'] GRAPH EXPAND(HOPS 2)
+
+-- 获取所有与"学 Python"连通、共享至少2个槽位的记忆
+SELECT * FROM memories WHERE [subject='我', action='学习'] GRAPH CONNECTED(MIN_SHARED 2)
+
+-- 查找从记忆 A 到记忆 B 的路径（最多3跳）
+SELECT * FROM memories WHERE id='mem_abc' GRAPH PATH(TO 'mem_xyz' HOPS 3)
+
+-- 沿 action 和 object 槽位追踪值链
+SELECT * FROM memories WHERE [subject='我'] GRAPH VALUE_CHAIN(SLOTS [action, object])
+
+-- 结合向量搜索和图扩展
+SELECT * FROM memories WHERE [purpose='提升技能'] SEARCH TOPK 20 GRAPH EXPAND(HOPS 1)
+```
+
+### 实现原理
+
+`GRAPH` 子句在 SELECT 结果（memory_id 列表）的基础上，由 `MemoryGraph` 执行：
+1. 从 `slot_value_index` 构建"槽位值 -> 记忆ID"的反向索引
+2. 在指定跳数内查找共享槽位值的记忆
+3. 返回扩展后的记忆列表
+
+---
+
+## 函数包装（WRAP / DEFINE）
+
+支持将一段 SELECT 查询包装为可复用的"视图"或直接内联执行。
+
+### WRAP 内联包装
+
+`WRAP(...)` 将括号内的 SQL 作为子查询执行，结果直接返回：
+
+```sql
+-- 等价于直接执行内部 SELECT
+SELECT * FROM memories WRAP(SELECT * FROM memories WHERE subject='我' LIMIT 5)
+
+-- WRAP 可以嵌套在其他语句中
+SELECT * FROM memories WRAP(SELECT * FROM memories WHERE [subject='我'] SEARCH TOPK 10) LIMIT 3
+```
+
+### DEFINE 命名视图
+
+`DEFINE` 创建命名视图（存储在 Interpreter 实例中）：
+
+```sql
+DEFINE my_skills AS SELECT * FROM memories WHERE [subject='我', action='学习'] SEARCH TOPK 10;
+DEFINE recent_memories AS SELECT * FROM memories WHERE [subject='我'] LIMIT 20;
+```
+
+> 注意：`DEFINE` 的视图存储在 `Interpreter._views` 字典中，作用域为单个 Interpreter 实例。

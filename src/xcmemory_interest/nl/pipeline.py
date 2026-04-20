@@ -138,10 +138,13 @@ class NLSearchPipeline:
         state["result"] = result
 
         # =====================================================================
-        # Step 5: 混合重排（始终执行，结果直接替代 MQL 结果）
+        # Step 5: 混合重排
+        # 如果 MQL 包含 GRAPH 子句，说明图扩展已执行完毕，保留图结果不做覆盖
+        # 否则用 HybridSearch 重排以提升普通向量搜索质量
         # =====================================================================
-        reranked = await self.hybrid.search(state["query"], top_k=top_k)
-        state["result"] = reranked
+        if "GRAPH" not in state["mql"].upper():
+            reranked = await self.hybrid.search(state["query"], top_k=top_k)
+            state["result"] = reranked
 
         # =====================================================================
         # Step 6: LLM 生成自然语言回答

@@ -19,11 +19,41 @@ from typing import Any
 NL_TO_MQL_PROMPT = """# Task
 将自然语言查询转换为 MQL 语句。
 
-# MQL 语法
+# MQL 语法（基础）
 SELECT * FROM memories WHERE [slot=value,...] [SEARCH TOPK n] [LIMIT n]
 六槽格式：<time><subject><action><object><purpose><result>，缺槽用 <无> 占位
 
-# 槽位规则（简版）
+# ★★★ GRAPH 图扩展语法（重要！★★★）
+对于综合性、人格分析、关系探索类查询，**必须**使用 GRAPH 关键字做多跳关联扩展：
+
+## GRAPH 语法
+SELECT * FROM memories [WHERE ...] GRAPH <operation>(<params>)
+
+## 何时用 GRAPH（判断规则）
+当查询属于以下类型时，**必须**在 WHERE 后加 GRAPH 子句：
+1. **综合性分析**："我是一个怎么样的人"、"我的性格特点"、"我有哪些特质"
+2. **关系探索**："我和谁关系好"、"我和家人的关系"、"我和朋友们的互动"
+3. **经历总结**："我经历过哪些重要的事"、"我的人生轨迹"、"我的成长历程"
+4. **多维度探索**："帮我全面了解自己"、"关于我的一切"
+5. **深层追问**（结果少于3条时）：在基础查询后加 GRAPH EXPAND(HOPS 2) 扩展关联记忆
+
+## GRAPH 操作类型
+- **GRAPH EXPAND(HOPS n)**：从种子记忆出发，扩展 n 跳邻居（推荐 HOPS 2）
+  示例：WHERE [subject='我'] GRAPH EXPAND(HOPS 2)
+- **GRAPH CONNECTED(MIN_SHARED m)**：获取所有连通记忆（共享 m 个以上槽位）
+  示例：WHERE [subject='我'] GRAPH CONNECTED(MIN_SHARED 2)
+- **GRAPH VALUE_CHAIN(SLOTS [槽位列表])**：沿槽位值链追踪
+  示例：WHERE [subject='我'] GRAPH VALUE_CHAIN(SLOTS [action, object])
+- **GRAPH NEIGHBORS(MIN_SHARED m)**：获取直接相邻记忆
+
+## GRAPH 使用示例
+- "我是一个怎么样的人" → SELECT * FROM memories WHERE subject='我' GRAPH EXPAND(HOPS 2) LIMIT 20
+- "关于我的一切" → SELECT * FROM memories WHERE subject='我' GRAPH CONNECTED(MIN_SHARED 2) LIMIT 30
+- "我的性格" → SELECT * FROM memories WHERE [subject='我', purpose='性格'] GRAPH EXPAND(HOPS 2)
+- "我和家人的关系" → SELECT * FROM memories WHERE [subject='我', object='家'] GRAPH EXPAND(HOPS 1)
+- 基础查询结果少时扩展：SELECT * FROM memories WHERE subject='我' SEARCH TOPK 5 GRAPH EXPAND(HOPS 2)
+
+# 槽位规则
 ① time：<平时>(永久) | <少年期/童年>(永久) | <那天晚上/深夜/早上>(一天) | <YYYY-MM-DD>
 ② subject：执行或承受动作的角色。**代词原文保留**："我"→'我'，"你"→'你'，"他"→'他'
 ③ action（预定义）：<是><与><的><同意><拒绝><希望><遵循><发生于><发生><想><说><做>
@@ -31,30 +61,25 @@ SELECT * FROM memories WHERE [slot=value,...] [SEARCH TOPK n] [LIMIT n]
 ⑤ purpose：目的/原因/条件
 ⑥ result：结果/补充
 
-# 代词展开规则（核心：主体意识）
-- "查询我有关的记忆" → WHERE subject='我'
-- "XX和我/他/她" → WHERE subject='我/他/她'
-
-# ★最重要★ 主体推断优先级（当查询没有明确指定"谁"时，默认主体是"我"）
+# ★最重要★ 主体推断优先级
 ## 高优先级推断（直接判定）：
-- "关于XX的记忆"（无主语）→ subject='我'，object='XX'   # 用户在问自己的记忆
-- "XX是什么/怎么样"（无主语）→ subject='我'              # 隐含"我的想法"
+- "关于XX的记忆" → subject='我'，object='XX'
+- "XX是什么/怎么样" → subject='我'
 - "我之前/以前/上次XX" → subject='我'
-- 纯粹时间/话题查询（如"上周的事"、"编程相关"）→ subject='我'
+- 纯粹时间/话题查询 → subject='我'
 
 ## 低优先级（明确指定了他者才用）：
-- "查找XX的记忆" 且 XX 是具体人名/角色名 → subject='XX'
+- "查找XX的记忆" 且 XX 是具体人名 → subject='XX'
 - "XX和YY的记忆" → subject='XX'
 
-# 示例（重点记忆！）
+# 示例
 - "关于Python的记忆" → WHERE subject='我' AND object='Python'
 - "查询我关于Python的记忆" → WHERE subject='我' AND object='Python'
-- "查找星织的记忆" → WHERE subject='星织'                # 明确指定了别人
-- "关于那天的事" → WHERE subject='我'                     # 无主语，默认自己
+- "我是一个怎么样的人" → WHERE subject='我' GRAPH EXPAND(HOPS 2) LIMIT 20
 - "我想学Python" → WHERE [subject='我', action='学', object='Python']
 
 # 输出格式（必须严格遵循）
-<analysis>意图+关键槽位</analysis>
+<analysis>意图+关键槽位+是否使用GRAPH及原因</analysis>
 <mql>生成的MQL语句</mql>
 <slots>{{"time":"","subject":"","action":"","object":"","purpose":"","result":""}}</slots>
 <confidence>0.0-1.0</confidence>

@@ -9,7 +9,8 @@ from dataclasses import dataclass
 
 from .parser import (
     ASTNode, SelectStatement, InsertStatement,
-    UpdateStatement, DeleteStatement, Condition
+    UpdateStatement, DeleteStatement, Condition,
+    DefineStatement, GraphClause
 )
 from .errors import ExecutionError
 
@@ -41,6 +42,8 @@ class Interpreter:
 
     def __init__(self):
         self._context: Dict[str, Any] = {}
+        # 命名视图注册表（DEFINE 语句创建）
+        self._views: Dict[str, str] = {}
 
     def bind(self, name: str, obj: Any) -> "Interpreter":
         """绑定对象到命名空间"""
@@ -107,6 +110,8 @@ class Interpreter:
             return self._execute_update(ast)
         elif isinstance(ast, DeleteStatement):
             return self._execute_delete(ast)
+        elif isinstance(ast, DefineStatement):
+            return self._execute_define(ast)
         else:
             raise ExecutionError(f"Unknown AST type: {type(ast)}")
 
@@ -188,6 +193,10 @@ class Interpreter:
 
     def _execute_select(self, stmt: SelectStatement) -> QueryResult:
         """执行 SELECT"""
+        # 处理 WRAP 包装语法
+        if stmt.wrapped_sql:
+            return self._execute_wrapped(stmt.wrapped_sql)
+
         mem = self._get_memory_system()
         results = []
 
@@ -249,6 +258,14 @@ class Interpreter:
         # LIMIT
         if stmt.limit:
             results = results[:stmt.limit]
+
+        # 执行 GRAPH 子句
+        if stmt.graph_clause and results:
+            results = self._execute_graph_clause(
+                stmt.graph_clause,
+                [r.get("id") for r in results if r.get("id")],
+                mem,
+            )
 
         return QueryResult(
             type="select",
@@ -337,6 +354,115 @@ class Interpreter:
             memory_ids=deleted_ids,
             message=f"Deleted {deleted} memories",
         )
+
+    # =========================================================================
+    # 图查询执行
+    # =========================================================================
+
+    def _execute_graph_clause(
+        self,
+        clause: GraphClause,
+        seed_memory_ids: List[str],
+        mem,
+    ) -> List[Dict[str, Any]]:
+        """执行 GRAPH 子句，对已有记忆 ID 列表做图扩展
+
+        Args:
+            clause: GraphClause AST 节点
+            seed_memory_ids: 起始记忆 ID 列表
+            mem: MemorySystem 实例
+
+        Returns:
+            扩展后的记忆字典列表
+        """
+        try:
+            from ..graph_query import MemoryGraph
+        except ImportError:
+            return []
+
+        graph = MemoryGraph(mem._vec_db)
+        expanded_ids = set()
+
+        for mid in seed_memory_ids:
+            if clause.operation == "EXPAND":
+                # 获取多跳邻居
+                connected = graph.get_connected_component(mid, min_shared_slots=clause.min_shared)
+                for gsr in connected:
+                    if gsr.distance <= clause.hops and gsr.distance > 0:
+                        expanded_ids.add(gsr.memory_id)
+
+            elif clause.operation == "NEIGHBORS":
+                # 获取直接邻居
+                neighbors = graph.get_neighbors(mid, max_distance=1, min_shared_slots=clause.min_shared)
+                for gsr in neighbors:
+                    expanded_ids.add(gsr.memory_id)
+
+            elif clause.operation == "PATH":
+                # 查找到目标记忆的路径
+                if clause.target_id:
+                    path = graph.find_path(mid, clause.target_id, max_depth=clause.hops or 3, min_shared_slots=clause.min_shared)
+                    if path:
+                        for path_id in path:
+                            expanded_ids.add(path_id)
+
+            elif clause.operation == "CONNECTED":
+                # 获取连通分量
+                connected = graph.get_connected_component(mid, min_shared_slots=clause.min_shared)
+                for gsr in connected:
+                    if gsr.distance > 0:
+                        expanded_ids.add(gsr.memory_id)
+
+            elif clause.operation == "VALUE_CHAIN":
+                # 沿槽位值链扩展
+                if clause.value_slots:
+                    chain_results = graph.find_memories_by_value_chain(
+                        mid,
+                        value_slots=clause.value_slots,
+                        max_depth=clause.hops or 3,
+                    )
+                    for gsr in chain_results:
+                        expanded_ids.add(gsr.memory_id)
+
+        # 去重并获取记忆详情
+        results = []
+        for eid in expanded_ids:
+            memory = mem.get_memory(eid)
+            if memory:
+                mem_dict = {
+                    "id": memory.id,
+                    "query_sentence": memory.query_sentence,
+                    "content": memory.content,
+                    "lifecycle": memory.lifecycle,
+                    "created_at": str(memory.created_at),
+                    "updated_at": str(memory.updated_at),
+                }
+                slots = self._parse_query_sentence(memory.query_sentence)
+                for k, v in slots.items():
+                    mem_dict[k] = v
+                results.append(mem_dict)
+
+        return results
+
+    # =========================================================================
+    # 函数包装执行
+    # =========================================================================
+
+    def _execute_define(self, stmt: DefineStatement) -> QueryResult:
+        """执行 DEFINE 语句，注册命名视图"""
+        self._views[stmt.name] = stmt.sql
+        return QueryResult(
+            type="define",
+            affected_rows=1,
+            memory_ids=[],
+            message=f"Defined view: {stmt.name}",
+        )
+
+    def _execute_wrapped(self, wrapped_sql: str) -> QueryResult:
+        """执行 WRAP(...) 包装的 SQL"""
+        # 去掉首尾空白
+        wrapped_sql = wrapped_sql.strip()
+        # 递归执行
+        return self.execute(wrapped_sql)
 
     def execute_script(self, script: str) -> List[QueryResult]:
         """
