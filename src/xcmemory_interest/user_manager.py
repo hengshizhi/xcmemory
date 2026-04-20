@@ -24,6 +24,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 
+def _safe_get(row: Any, key: str, default: Any = None) -> Any:
+    """兼容 dict 与 sqlite3.Row 的取值方法"""
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return row[key] if key in row.keys() else default
+
+
 # ============================================================================
 # 常量与枚举
 # ============================================================================
@@ -53,6 +60,7 @@ class User:
     username: str
     api_key_hash: str
     is_superadmin: bool
+    llm_enabled: bool
     created_at: datetime
     updated_at: datetime
 
@@ -122,6 +130,7 @@ class UserManager:
                     username TEXT UNIQUE NOT NULL,
                     api_key_hash TEXT NOT NULL,
                     is_superadmin INTEGER DEFAULT 0,
+                    llm_enabled INTEGER DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -148,12 +157,19 @@ class UserManager:
                 (self.DEFAULT_ADMIN,)
             )
             if cursor.fetchone() is None:
-                conn.execute(
-                    "INSERT INTO users (username, api_key_hash, is_superadmin, created_at, updated_at) VALUES (?, ?, 1, ?, ?)",
-                    (self.DEFAULT_ADMIN, "", now, now)
-                )
+                conn.            conn.execute(
+                "INSERT INTO users (username, api_key_hash, is_superadmin, created_at, updated_at) VALUES (?, ?, 1, ?, ?)",
+                (self.DEFAULT_ADMIN, "", now, now)
+            )
 
             conn.commit()
+
+            # 迁移：存量表可能没有 llm_enabled 列
+            try:
+                conn.execute("ALTER TABLE users ADD COLUMN llm_enabled INTEGER DEFAULT 0")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # 列已存在，忽略
         finally:
             conn.close()
 
@@ -281,6 +297,7 @@ class UserManager:
                 username=row["username"],
                 api_key_hash=row["api_key_hash"],
                 is_superadmin=bool(row["is_superadmin"]),
+                llm_enabled=bool(_safe_get(row, "llm_enabled", 0)),
                 created_at=datetime.fromisoformat(row["created_at"]),
                 updated_at=datetime.fromisoformat(row["updated_at"]),
             )
@@ -423,6 +440,7 @@ class UserManager:
                     "id": row["id"],
                     "username": row["username"],
                     "is_superadmin": bool(row["is_superadmin"]),
+                    "llm_enabled": bool(_safe_get(row, "llm_enabled", 0)),
                     "has_api_key": bool(row["api_key_hash"]),
                     "created_at": row["created_at"],
                     "permissions": perms,
@@ -445,6 +463,7 @@ class UserManager:
                 "id": row["id"],
                 "username": row["username"],
                 "is_superadmin": bool(row["is_superadmin"]),
+                "llm_enabled": bool(_safe_get(row, "llm_enabled", 0)),
                 "has_api_key": bool(row["api_key_hash"]),
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
@@ -524,6 +543,53 @@ class UserManager:
                 return True, f"Revoked {permission.value} on '{system_name}' from '{username}'"
             else:
                 return False, f"Permission not found"
+        finally:
+            conn.close()
+
+    def has_llm_permission(self, username: str) -> bool:
+        """
+        检查用户是否有 LLM 查询权限。
+
+        Args:
+            username: 用户名
+
+        Returns:
+            是否有 LLM 权限（超级管理员默认有，普通用户需 llm_enabled=1）
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                "SELECT is_superadmin, llm_enabled FROM users WHERE username = ?",
+                (username,)
+            )
+            row = cursor.fetchone()
+            if row and bool(row["is_superadmin"]):
+                return True
+            return bool(row["llm_enabled"]) if row else False
+        finally:
+            conn.close()
+
+    def set_llm_permission(self, username: str, enabled: bool) -> tuple:
+        """
+        设置用户的 LLM 权限（仅超级管理员可操作）。
+
+        Args:
+            username: 用户名
+            enabled: 是否启用 LLM
+
+        Returns:
+            (success, message)
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                "UPDATE users SET llm_enabled = ?, updated_at = ? WHERE username = ?",
+                (1 if enabled else 0, datetime.now().isoformat(), username)
+            )
+            conn.commit()
+            if cursor.rowcount > 0:
+                return True, f"LLM permission {'enabled' if enabled else 'disabled'} for '{username}'"
+            return False, f"User '{username}' not found"
         finally:
             conn.close()
 
@@ -673,6 +739,7 @@ class AuthContext:
     """认证上下文"""
     username: str
     is_superadmin: bool
+    llm_enabled: bool
     permissions: Dict[str, List[PermissionType]]  # {system_name: [permissions]}
 
     @staticmethod
@@ -690,6 +757,7 @@ class AuthContext:
         return AuthContext(
             username=auth_result.username,
             is_superadmin=auth_result.user.is_superadmin if auth_result.user else False,
+            llm_enabled=auth_result.user.llm_enabled if auth_result.user else False,
             permissions=perms,
         )
 

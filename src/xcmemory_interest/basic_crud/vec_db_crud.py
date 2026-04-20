@@ -22,6 +22,7 @@
 import os
 import uuid
 import sqlite3
+import json
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
@@ -50,6 +51,7 @@ class Memory:
     lifecycle: int
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
+    extra: Dict[str, Any] = field(default_factory=dict)  # STO 元数据：权重、锁定、过期、血缘等
 
     def to_dict(self) -> dict:
         return {
@@ -61,6 +63,7 @@ class Memory:
             "lifecycle": self.lifecycle,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
+            "extra": self.extra,
         }
 
     @classmethod
@@ -74,6 +77,7 @@ class Memory:
             lifecycle=d["lifecycle"],
             created_at=datetime.fromisoformat(d["created_at"]),
             updated_at=datetime.fromisoformat(d["updated_at"]),
+            extra=d.get("extra", {}),
         )
 
 
@@ -210,7 +214,8 @@ class VecDBCRUD:
                 content TEXT NOT NULL,
                 lifecycle INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                extra TEXT NOT NULL DEFAULT '{}'
             )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_lifecycle ON memories(lifecycle)")
@@ -241,6 +246,12 @@ class VecDBCRUD:
         row = cur.fetchone()
         if row is None:
             return None
+        extra = {}
+        if row["extra"]:
+            try:
+                extra = json.loads(row["extra"])
+            except (json.JSONDecodeError, TypeError):
+                extra = {}
         return Memory(
             id=row["id"],
             query_sentence=row["query_sentence"],
@@ -250,14 +261,16 @@ class VecDBCRUD:
             lifecycle=row["lifecycle"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
+            extra=extra,
         )
 
     def _kv_write(self, memory: Memory):
+        extra_json = json.dumps(memory.extra, ensure_ascii=False)
         self._conn.cursor().execute("""
             INSERT INTO memories (
                 id, query_sentence, query_embedding, raw_embedding,
-                content, lifecycle, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                content, lifecycle, created_at, updated_at, extra
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             memory.id,
             memory.query_sentence,
@@ -267,10 +280,11 @@ class VecDBCRUD:
             memory.lifecycle,
             memory.created_at.isoformat(),
             memory.updated_at.isoformat(),
+            extra_json,
         ))
         self._conn.commit()
 
-    def _kv_update(self, memory_id: str, content: Optional[str] = None, lifecycle: Optional[int] = None) -> bool:
+    def _kv_update(self, memory_id: str, content: Optional[str] = None, lifecycle: Optional[int] = None, extra: Optional[Dict[str, Any]] = None) -> bool:
         updates, params = [], []
         if content is not None:
             updates.append("content = ?")
@@ -278,6 +292,9 @@ class VecDBCRUD:
         if lifecycle is not None:
             updates.append("lifecycle = ?")
             params.append(lifecycle)
+        if extra is not None:
+            updates.append("extra = ?")
+            params.append(json.dumps(extra, ensure_ascii=False))
         if not updates:
             return False
         updates.append("updated_at = ?")
@@ -587,10 +604,11 @@ class VecDBCRUD:
         memory_id: str,
         content: Optional[str] = None,
         lifecycle: Optional[int] = None,
+        extra: Optional[Dict[str, Any]] = None,
         force_archive: bool = False,
     ) -> bool:
         """
-        更新记忆的 content 和/或 lifecycle（不改变向量）
+        更新记忆的 content、lifecycle 和/或 extra（不改变向量）
 
         版本更新遵循存档阈值策略：
         - 每 N 次更新存档一次（N 由 VersionManager.archive_threshold 设置）
@@ -601,6 +619,7 @@ class VecDBCRUD:
             memory_id: 记忆ID
             content: 新内容（不修改则传 None）
             lifecycle: 新生命周期（不修改则传 None）
+            extra: 新 extra 字典（不修改则传 None，会完整覆盖旧 extra）
             force_archive: 是否强制存档（默认 False，按阈值策略存档）
 
         Returns:
@@ -610,7 +629,7 @@ class VecDBCRUD:
         old_memory = self._kv_read(memory_id)
 
         # 执行更新
-        ok = self._kv_update(memory_id, content=content, lifecycle=lifecycle)
+        ok = self._kv_update(memory_id, content=content, lifecycle=lifecycle, extra=extra)
 
         if ok and old_memory is not None:
             # 读取新版本并记录（按阈值策略）

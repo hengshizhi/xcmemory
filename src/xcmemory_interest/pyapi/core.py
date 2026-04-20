@@ -46,6 +46,7 @@ class Memory:
     lifecycle: int                 # 生命周期（秒）
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
+    extra: Dict[str, Any] = field(default_factory=dict)  # STO 元数据：权重、锁定、过期、血缘等
 
     def to_dict(self) -> dict:
         return {
@@ -57,6 +58,7 @@ class Memory:
             "lifecycle": self.lifecycle,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
+            "extra": self.extra,
         }
 
     @classmethod
@@ -70,6 +72,7 @@ class Memory:
             lifecycle=d["lifecycle"],
             created_at=datetime.fromisoformat(d["created_at"]),
             updated_at=datetime.fromisoformat(d["updated_at"]),
+            extra=d.get("extra", {}),
         )
 
 
@@ -404,6 +407,7 @@ class MemorySystem:
         memory_id: str,
         content: Optional[str] = None,
         lifecycle: Optional[int] = None,
+        extra: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         更新记忆
@@ -412,12 +416,13 @@ class MemorySystem:
             memory_id: 记忆 ID
             content: 新内容（不修改则传 None）
             lifecycle: 新生命周期（不修改则传 None）
+            extra: 新 extra 字典（不修改则传 None）
 
         Returns:
             是否成功
         """
         self._check_initialized()
-        return self._vec_db.update(memory_id=memory_id, content=content, lifecycle=lifecycle)
+        return self._vec_db.update(memory_id=memory_id, content=content, lifecycle=lifecycle, extra=extra)
 
     # =========================================================================
     # CRUD - 删除

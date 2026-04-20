@@ -58,6 +58,9 @@ from .parser import (
     Condition, SystemStatement, UserStatement
 )
 from .interpreter_extended import Interpreter, QueryResult
+from .dryrun import DryRunInterpreter, DryRunMixIn
+from .time_filter import TimeFilterMixIn, RELATIVE_TIME_MAP, parse_relative_time
+from .sto_operations import STOOperations
 
 __all__ = [
     # 版本
@@ -86,4 +89,13 @@ __all__ = [
     # 解释器
     "Interpreter",
     "QueryResult",
+    # Dry-run 模式
+    "DryRunInterpreter",
+    "DryRunMixIn",
+    # 相对时间过滤器
+    "TimeFilterMixIn",
+    "RELATIVE_TIME_MAP",
+    "parse_relative_time",
+    # STO 操作集
+    "STOOperations",
 ]

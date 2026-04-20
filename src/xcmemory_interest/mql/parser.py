@@ -79,6 +79,7 @@ class UpdateStatement(ASTNode):
 class DeleteStatement(ASTNode):
     """DELETE 语句"""
     conditions: List["Condition"] = field(default_factory=list)
+    kwargs: Dict[str, Any] = field(default_factory=dict)  # 支持 dry_run=True 等
 
 
 @dataclass
@@ -494,7 +495,15 @@ class Parser:
         if self._matchAdvance(TokenType.WHERE):
             conditions = self._parseConditions()
 
-        return DeleteStatement(conditions=conditions)
+        # DRYRUN / DRY RUN 修饰符
+        kwargs: Dict[str, Any] = {}
+        if self._matchAdvance(TokenType.DRYRUN):
+            kwargs["dry_run"] = True
+        elif self._matchAdvance(TokenType.DRY):
+            self._expect(TokenType.RUN)
+            kwargs["dry_run"] = True
+
+        return DeleteStatement(conditions=conditions, kwargs=kwargs)
 
     # =========================================================================
     # 系统管理语句

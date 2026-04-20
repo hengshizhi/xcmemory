@@ -18,6 +18,9 @@ import pandas as pd
 
 _api_server: Optional["APIServer"] = None  # 由 start_server.py 注入
 _auth_context = None
+_llm_client = None  # AsyncOpenAI client for NL query
+_llm_model = "xiaomi/mimo-v2-flash"
+_debug_mode = False
 
 # 槽位名称（与 embedding_coder.SLOT_NAMES 保持一致）
 SLOT_NAMES = ["time", "subject", "action", "object", "purpose", "result"]
@@ -33,12 +36,19 @@ SEARCH_HEADERS = ["ID", "time", "subject", "action", "object", "purpose", "resul
 # 初始化（由 start_server.py 调用）
 # ============================================================================
 
-def init_webui(api_server: "APIServer", auth_username: str, is_admin: bool):
+def init_webui(api_server: "APIServer", auth_username: str, is_admin: bool, openai_config: dict = None, debug: bool = False):
     """
     由 start_server.py 调用，注入已创建的 APIServer 实例。
     此时 admin 已通过 config.toml 的 api_key 完成认证。
+
+    Args:
+        api_server: APIServer 实例
+        auth_username: 认证用户名
+        is_admin: 是否管理员
+        openai_config: OpenAI LLM 配置，{"api_key", "base_url", "model"}
+        debug: 是否开启调试输出
     """
-    global _api_server, _auth_context, _is_admin, _active_system_name, _pre_authenticated
+    global _api_server, _auth_context, _is_admin, _active_system_name, _pre_authenticated, _llm_client, _llm_model, _debug_mode
     _api_server = api_server
     _is_admin = is_admin
     _pre_authenticated = True
@@ -48,6 +58,7 @@ def init_webui(api_server: "APIServer", auth_username: str, is_admin: bool):
     _auth_context = AuthContext(
         username=auth_username,
         is_superadmin=is_admin,
+        llm_enabled=is_admin,  # admin 默认开 LLM
         permissions={"*": [PermissionType.ADMIN]} if is_admin else {},
     )
 
@@ -61,6 +72,22 @@ def init_webui(api_server: "APIServer", auth_username: str, is_admin: bool):
             first = systems[0]["name"]
             _api_server.pyapi.set_active_system(first)
             _active_system_name = first
+
+    # 初始化 LLM 客户端
+    _llm_client = None
+    _llm_model = "xiaomi/mimo-v2-flash"
+    if openai_config and openai_config.get("api_key"):
+        try:
+            from openai import AsyncOpenAI
+            _llm_client = AsyncOpenAI(
+                api_key=openai_config["api_key"],
+                base_url=openai_config.get("base_url", "https://openrouter.ai/api/v1"),
+            )
+            _llm_model = openai_config.get("model", "xiaomi/mimo-v2-flash")
+        except Exception as e:
+            print(f"[WARN] LLM 客户端初始化失败: {e}")
+
+    _debug_mode = debug
 
 
 # ============================================================================
@@ -392,6 +419,105 @@ def do_mql(mql_script):
         return f"❌ 执行失败: {str(e)}"
 
 
+def do_nl_query(nl_query: str, top_k: int):
+    """
+    自然语言查询：使用 NL Pipeline（决策→重写→生成MQL→执行→LLM重排）
+    """
+    if not nl_query.strip():
+        return "❌ 请输入自然语言查询"
+    if _api_server is None or _api_server.pyapi.active_system is None:
+        return "❌ 未连接服务器或未选择记忆系统"
+    if _llm_client is None:
+        return "❌ 未配置 OpenAI API Key，无法使用自然语言查询"
+    if _auth_context is not None and not _auth_context.llm_enabled:
+        return "❌ 当前用户没有 LLM 查询权限，请联系管理员开启"
+
+    import asyncio
+
+    async def _run():
+        from xcmemory_interest.nl.pipeline import NLSearchPipeline
+
+        pipeline = NLSearchPipeline(
+            llm_client=_llm_client,
+            memory_system=_api_server.pyapi.active_system,
+            model=_llm_model,
+            debug=_debug_mode,
+        )
+
+        result = await pipeline.run(
+            nl_query=nl_query.strip(),
+            history=[],
+            top_k=int(top_k),
+        )
+        return result
+
+    try:
+        result = asyncio.run(_run())
+
+        # 格式化输出
+        lines = [f"🤖 自然语言查询: {nl_query}"]
+        items = result.get("result", [])
+        lines.append(f"📊 检索到 {len(items)} 条记忆")
+        lines.append("")
+
+        # 显示 MQL
+        if result.get("mql"):
+            lines.append(f"📝 生成 MQL:\n   {result['mql']}")
+            lines.append("")
+
+        # 显示 LLM 自然语言回答
+        nl_resp = result.get("response", "")
+        if nl_resp:
+            lines.append(f"💬 {nl_resp}")
+            lines.append("")
+
+        # 显示槽位
+        if result.get("slots"):
+            slots = result["slots"]
+            slot_parts = [f"{k}={v}" for k, v in slots.items() if v and v not in ("<无>", "<空>")]
+            if slot_parts:
+                lines.append(f"🎯 槽位: {', '.join(slot_parts)}")
+                lines.append("")
+
+        # 显示完整检索结果（MQL executor 风格）
+        if items:
+            lines.append("📄 检索结果:")
+            for i, item in enumerate(items, 1):
+                # 优先用 content，否则用 query_sentence
+                content = item.get("content", "")
+                qs = item.get("query_sentence", "")
+                if content:
+                    lines.append(f"  {i}. {content}")
+                elif qs:
+                    lines.append(f"  {i}. [槽位] {qs}")
+                else:
+                    lines.append(f"  {i}. (无内容)")
+                # 显示详细信息
+                mid = item.get("id", item.get("memory_id", ""))
+                lifecycle = item.get("lifecycle", "")
+                created = str(item.get("created_at", ""))[:16]
+                distance = item.get("distance", None)
+                detail_parts = [f"id={mid}"] if mid else []
+                if lifecycle:
+                    detail_parts.append(f"lifecycle={lifecycle}")
+                if created:
+                    detail_parts.append(f"创建={created}")
+                if distance is not None:
+                    detail_parts.append(f"距离={distance:.4f}")
+                if detail_parts:
+                    lines.append(f"     [{', '.join(detail_parts)}]")
+                if qs:
+                    lines.append(f"     [槽位] {qs}")
+        else:
+            lines.append("📄 未检索到相关记忆")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        import traceback
+        return f"❌ 查询失败: {str(e)}\n{traceback.format_exc()}"
+
+
 # ============================================================================
 # 系统管理（管理员）
 # ============================================================================
@@ -566,7 +692,27 @@ def build_app(pre_auth: bool = False, admin_user: str = "admin") -> gr.Blocks:
                     with gr.Column(scale=2):
                         search_out = gr.DataFrame(headers=SEARCH_HEADERS, label="搜索结果", max_height=500)
 
-            # ---------- Tab 3: MQL 查询 ----------
+            # ---------- Tab 3: 自然语言查询 ----------
+            with gr.Tab("🧠 自然语言查询"):
+                gr.Markdown("""
+                **使用自然语言查询记忆，无需编写 MQL！**
+
+                示例：
+                - "查询我昨天写的 Python 代码"
+                - "我最近关于项目进度有哪些记忆"
+                - "帮我看看关于机器学习的笔记"
+                """)
+                with gr.Row():
+                    nl_query_in = gr.Textbox(
+                        label="自然语言查询",
+                        placeholder="输入你的问题，如：查询我关于Python的记忆...",
+                        scale=4,
+                    )
+                    nl_topk = gr.Number(label="返回条数", value=5, scale=1)
+                nl_query_btn = gr.Button("🔮 查询", variant="primary")
+                nl_out = gr.Textbox(label="查询结果", lines=20, interactive=False)
+
+            # ---------- Tab 4: MQL 查询 ----------
             with gr.Tab("📝 MQL 查询"):
                 gr.Markdown("""
                 **MQL 示例:**
@@ -646,6 +792,9 @@ def build_app(pre_auth: bool = False, admin_user: str = "admin") -> gr.Blocks:
         # 向量搜索
         ss_btn.click(do_subspace_search, inputs=[ss_time, ss_subj, ss_act, ss_obj, ss_purp, ss_res, ss_k], outputs=[search_out])
         fs_btn.click(do_fullspace_search, inputs=[fs_time, fs_subj, fs_act, fs_obj, fs_purp, fs_res, fs_k], outputs=[search_out])
+
+        # 自然语言查询
+        nl_query_btn.click(do_nl_query, inputs=[nl_query_in, nl_topk], outputs=[nl_out])
 
         # MQL
         mql_exec_btn.click(do_mql, inputs=[mql_in], outputs=[mql_out])

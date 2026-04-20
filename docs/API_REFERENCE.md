@@ -607,91 +607,113 @@ class LifecycleQueryResult:
 
 ## 9. HTTP API
 
-### 9.1 APIServer
+## 9. HTTP API
+
+### 9.1 启动 APIServer
 
 ```python
+from xcmemory_interest.netapi import APIServer
+
 server = APIServer(
     database_root: str = "./data",
     host: str = "0.0.0.0",
     port: int = 8080,
     ws_port: int = None,
-    max_request_size: int = 10 * 1024 * 1024,
+    debug: bool = False,
+    openai_config: dict = None,   # 配置 LLM（nl-query 必需）
 )
 
 server.start(blocking: bool = True)
 server.stop()
 ```
 
-### 9.2 端点
+`openai_config` 结构：
+```python
+{
+    "api_key": "sk-...",
+    "base_url": "https://openrouter.ai/api/v1",  # 可选
+    "model": "xiaomi/mimo-v2-flash",             # 可选
+}
+```
 
-| 方法 | 路径 | 说明 | 认证 |
-|------|------|------|------|
-| GET | `/health` | 健康检查 | 否 |
-| POST | `/api/v1/query` | 执行 MQL | 是 |
-| GET | `/api/v1/systems` | 列出系统 | 是 |
-| POST | `/api/v1/systems` | 创建系统 | 是 |
-| GET | `/api/v1/systems/<name>` | 获取系统信息 | 是 |
+### 9.2 认证方式
+
+所有 `/api/v1/*` 接口均需认证，在请求头中传递 API Key：
+
+```
+X-Api-Key: xi-admin-xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+超级管理员 API Key 格式为 `xi-admin-<key>`，由系统初始化时生成。
+
+### 9.3 端点总览
+
+| 方法 | 路径 | 说明 | 认证要求 |
+|------|------|------|---------|
+| GET | `/health` | 健康检查 | 无 |
+| GET | `/ws` | WebSocket 升级 | 见 WebSocket 章节 |
+| POST | `/api/v1/query` | 执行 MQL 查询 | API Key |
+| GET | `/api/v1/query` | 执行 MQL 查询（GET） | API Key |
+| GET | `/api/v1/systems` | 列出所有记忆系统 | API Key |
+| POST | `/api/v1/systems` | 创建记忆系统 | API Key |
+| GET | `/api/v1/systems/<name>` | 获取系统详情 | API Key |
 | DELETE | `/api/v1/systems/<name>` | 删除系统 | 管理员 |
-| POST | `/api/v1/systems/<name>/use` | 切换系统 | 是 |
-| GET | `/api/v1/users` | 列出用户 | 管理员 |
+| POST | `/api/v1/systems/<name>/use` | 切换活跃系统 | API Key |
+| GET | `/api/v1/users` | 列出所有用户 | 管理员 |
 | POST | `/api/v1/users` | 创建用户 | 管理员 |
 | GET | `/api/v1/users/<username>` | 获取用户信息 | 管理员 |
 | DELETE | `/api/v1/users/<username>` | 删除用户 | 管理员 |
-| POST | `/api/v1/users/<username>/generate_key` | 生成 APIKey | 管理员 |
+| POST | `/api/v1/users/<username>/generate_key` | 重置用户 APIKey | 管理员 |
+| POST | `/api/v1/users/<username>/llm-toggle` | 开启/关闭 LLM 权限 | 管理员 |
 | POST | `/api/v1/permissions` | 授予权限 | 管理员 |
 | DELETE | `/api/v1/permissions` | 撤销权限 | 管理员 |
+| POST | `/api/v1/nl-query` | 自然语言查询 | API Key + `llm_enabled=true` |
 
-### 9.3 请求格式
+### 9.4 请求与响应详解
 
-#### POST `/api/v1/query`
+#### 健康检查
+
+```
+GET /health
+```
 
 ```json
-// 单条 MQL
+{ "status": "ok" }
+```
+
+---
+
+#### 执行 MQL（POST）
+
+```
+POST /api/v1/query
+X-Api-Key: xi-admin-xxx
+Content-Type: application/json
+
 {
     "mql": "SELECT * FROM memories LIMIT 5"
 }
 
-// 多行 MQL
+// 或执行多行脚本
 {
     "script": "CREATE DATABASE test; USE test; SELECT * FROM memories;"
 }
 ```
 
-#### POST `/api/v1/systems`
-
-```json
-{
-    "name": "my_system",
-    "enable_interest_mode": false,
-    "similarity_threshold": 0.5
-}
-```
-
-#### POST `/api/v1/users`
-
-```json
-{
-    "username": "alice"
-}
-```
-
-#### POST `/api/v1/permissions`
-
-```json
-{
-    "username": "alice",
-    "system": "my_system",
-    "permission": "read_write"
-}
-```
-
-### 9.4 响应格式
-
 ```json
 {
     "type": "result",
     "success": true,
-    "data": [...],
+    "data": [
+        {
+            "id": "mem_xxx",
+            "query_sentence": "<平时><用户><学><编程><喜欢><写代码>",
+            "content": "喜欢学编程",
+            "lifecycle": 86400,
+            "created_at": "2026-04-19T23:48:32.835592",
+            "updated_at": "2026-04-19T23:48:32.835592"
+        }
+    ],
     "affected_rows": 1,
     "memory_ids": ["mem_xxx"],
     "message": "OK"
@@ -700,7 +722,330 @@ server.stop()
 
 ---
 
-## 10. WebSocket API
+#### 执行 MQL（GET，URL 参数）
+
+```
+GET /api/v1/query?mql=SELECT * FROM memories LIMIT 5
+X-Api-Key: xi-admin-xxx
+```
+
+响应格式同 POST。
+
+---
+
+#### 列出系统
+
+```
+GET /api/v1/systems
+X-Api-Key: xi-admin-xxx
+```
+
+```json
+{ "systems": ["default"] }
+```
+
+---
+
+#### 创建系统
+
+```
+POST /api/v1/systems
+X-Api-Key: xi-admin-xxx
+Content-Type: application/json
+
+{
+    "name": "my_system",
+    "enable_interest_mode": false,
+    "similarity_threshold": 0.5
+}
+```
+
+```json
+{ "message": "System 'my_system' created", "name": "my_system" }
+```
+
+---
+
+#### 获取系统详情
+
+```
+GET /api/v1/systems/<name>
+X-Api-Key: xi-admin-xxx
+```
+
+```json
+{
+    "name": "my_system",
+    "is_active": true,
+    "memory_count": 12,
+    "enable_interest_mode": false
+}
+```
+
+---
+
+#### 删除系统
+
+```
+DELETE /api/v1/systems/<name>
+X-Api-Key: xi-admin-xxx
+```
+
+```json
+{ "message": "System 'my_system' deleted" }
+```
+
+---
+
+#### 切换活跃系统
+
+```
+POST /api/v1/systems/<name>/use
+X-Api-Key: xi-admin-xxx
+```
+
+```json
+{ "message": "Active system set to 'my_system'" }
+```
+
+---
+
+#### 列出用户
+
+```
+GET /api/v1/users
+X-Api-Key: xi-admin-xxx
+```
+
+```json
+{
+    "users": [
+        {
+            "id": 1,
+            "username": "admin",
+            "is_superadmin": true,
+            "llm_enabled": true,
+            "has_api_key": true,
+            "created_at": "2026-04-18T21:06:04.734185",
+            "permissions": []
+        }
+    ]
+}
+```
+
+---
+
+#### 创建用户
+
+```
+POST /api/v1/users
+X-Api-Key: xi-admin-xxx
+Content-Type: application/json
+
+{ "username": "alice" }
+```
+
+```json
+{ "message": "User 'alice' created", "username": "alice" }
+```
+
+---
+
+#### 获取用户信息
+
+```
+GET /api/v1/users/<username>
+X-Api-Key: xi-admin-xxx
+```
+
+```json
+{
+    "id": 2,
+    "username": "alice",
+    "is_superadmin": false,
+    "llm_enabled": false,
+    "has_api_key": true,
+    "created_at": "2026-04-20T00:00:00.000000",
+    "permissions": []
+}
+```
+
+---
+
+#### 删除用户
+
+```
+DELETE /api/v1/users/<username>
+X-Api-Key: xi-admin-xxx
+```
+
+```json
+{ "message": "User 'alice' deleted" }
+```
+
+---
+
+#### 重置用户 APIKey
+
+```
+POST /api/v1/users/<username>/generate_key
+X-Api-Key: xi-admin-xxx
+```
+
+```json
+{
+    "message": "New API key generated for 'alice'",
+    "username": "alice",
+    "api_key": "xi-alice-xxxxxxxxxxxxxxxxxxxxxxxx"
+}
+```
+
+---
+
+#### 开启/关闭用户 LLM 权限
+
+```
+POST /api/v1/users/<username>/llm-toggle
+X-Api-Key: xi-admin-xxx
+Content-Type: application/json
+
+{ "enable": true }    // 或 false
+```
+
+```json
+{
+    "message": "LLM permission enabled for 'alice'",
+    "username": "alice",
+    "llm_enabled": true
+}
+```
+
+> 只有 `llm_enabled=true` 的用户才能调用 `/api/v1/nl-query`。
+
+---
+
+#### 授予权限
+
+```
+POST /api/v1/permissions
+X-Api-Key: xi-admin-xxx
+Content-Type: application/json
+
+{
+    "username": "alice",
+    "system": "my_system",
+    "permission": "read_write"
+}
+```
+
+权限值：`read`、`write`、`read_write`、`version_commit`、`version_delete`、`admin`
+
+```json
+{ "message": "Permission granted" }
+```
+
+---
+
+#### 撤销权限
+
+```
+DELETE /api/v1/permissions
+X-Api-Key: xi-admin-xxx
+Content-Type: application/json
+
+{
+    "username": "alice",
+    "system": "my_system",
+    "permission": "read_write"
+}
+```
+
+```json
+{ "message": "Permission revoked" }
+```
+
+---
+
+#### 自然语言查询
+
+```
+POST /api/v1/nl-query
+X-Api-Key: xi-admin-xxx
+Content-Type: application/json
+
+{
+    "query": "我有关于 Python 的记忆",
+    "top_k": 5
+}
+```
+
+> 要求：用户必须 `llm_enabled=true`，且服务器需配置 `openai_config`。
+
+```json
+{
+    "type": "retrieved",
+    "query": "我有关于 Python 的记忆",
+    "response": "根据记忆，您平时喜欢学编程...",
+    "mql": "SELECT * FROM memories WHERE subject='用户' AND object='Python' LIMIT 5",
+    "slots": {},
+    "result_count": 2,
+    "results": [
+        {
+            "memory_id": "mem_xxx",
+            "score": 0.685,
+            "vector_score": 0.978,
+            "keyword_score": 0.0,
+            "phrase_bonus": 0.0,
+            "memory": {
+                "id": "mem_xxx",
+                "query_sentence": "<平时><用户><学><编程><喜欢><写代码>",
+                "query_embedding": [0.039, -0.004, ...],
+                "raw_embedding": [0.012, 0.056, ...],
+                "content": "喜欢学编程",
+                "lifecycle": 86400,
+                "created_at": "2026-04-19T23:48:32.835592",
+                "updated_at": "2026-04-19T23:48:32.835592",
+                "extra": {}
+            },
+            "distance": 0.051,
+            "id": "mem_xxx",
+            "content": "喜欢学编程",
+            "query_sentence": "<平时><用户><学><编程><喜欢><写代码>",
+            "lifecycle": 86400,
+            "created_at": "2026-04-19 23:48:32.835592"
+        }
+    ]
+}
+```
+
+`type` 为 `"direct"` 时表示 NL Pipeline 判断无需检索，直接回复。
+
+### 9.5 错误响应格式
+
+```json
+// HTTP 4xx/5xx
+{
+    "error": "错误描述文字",
+    "body": { ... }
+}
+
+// HTTP 200 但路径不存在
+{
+    "error": "Not found: GET /unknown/path"
+}
+```
+
+常见错误码：
+
+| HTTP 状态码 | 含义 |
+|-------------|------|
+| 400 | 请求参数错误 |
+| 401 | 未提供或无效 API Key |
+| 403 | 无权限（如 LLM 权限未开启） |
+| 404 | 资源不存在 |
+| 500 | 服务器内部错误 |
+
+
 
 ### 10.1 连接
 

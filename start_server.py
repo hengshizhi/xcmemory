@@ -59,6 +59,11 @@ DEFAULT_CONFIG = {
     "admin": {
         "api_key": None,  # 首次启动时自动生成
     },
+    "openai": {
+        "api_key": None,  # OpenAI API Key，留空则使用环境变量
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "xiaomi/mimo-v2-flash",
+    },
 }
 
 CONFIG_FILE = Path(__file__).parent / "config.toml"
@@ -97,6 +102,10 @@ def _save_config(config: dict) -> None:
         lines.append(f"api_key = {config['admin']['api_key']!r}")
     else:
         lines.append("api_key = nil  # 首次启动时请设置 api_key")
+    lines.append("")
+    lines.append("[openai]")
+    for k, v in config["openai"].items():
+        lines.append(f"{k} = {v!r}" if v is not None else f"{k} = nil")
 
     content = "\n".join(lines)
     CONFIG_FILE.write_text(content, encoding="utf-8")
@@ -170,6 +179,23 @@ def apply_netapi_config(config: dict):
     netapi.MAX_WEBSOCKET_FRAME_SIZE = nc["max_websocket_frame_size"]
 
 
+def get_openai_config(config: dict) -> dict:
+    """
+    获取 OpenAI LLM 配置。
+
+    优先级：config.toml [openai] > 环境变量
+
+    Returns:
+        {"api_key": str, "base_url": str, "model": str}
+    """
+    oc = config.get("openai", {})
+    return {
+        "api_key": oc.get("api_key") or os.environ.get("OPENAI_API_KEY", ""),
+        "base_url": oc.get("base_url") or os.environ.get("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
+        "model": oc.get("model") or os.environ.get("OPENAI_MODEL", "xiaomi/mimo-v2-flash"),
+    }
+
+
 def ensure_admin(config: dict):
     """
     确保超级管理员存在，若 api_key 为空则生成新的。
@@ -215,12 +241,12 @@ def ensure_admin(config: dict):
 # Gradio WebUI 线程启动
 # ============================================================================
 
-def _start_gradio_thread(api_server, admin_user: str, is_admin: bool, gradio_port: int):
+def _start_gradio_thread(api_server, admin_user: str, is_admin: bool, gradio_port: int, openai_config: dict, debug: bool = False):
     """在后台线程中启动 Gradio WebUI"""
     from webui.app import init_webui, launch_gradio
 
-    # 注入已创建的 APIServer
-    init_webui(api_server, admin_user, is_admin)
+    # 注入已创建的 APIServer 和 openai_config
+    init_webui(api_server, admin_user, is_admin, openai_config, debug=debug)
 
     # 启动 Gradio（阻塞）
     launch_gradio(gradio_port=gradio_port, pre_auth=True, admin_user=admin_user)
@@ -292,6 +318,9 @@ def main():
         print(f"  Admin APIKey: {'*' * 20} (已设置)")
         print()
 
+    # 读取 OpenAI 配置（需在构造 APIServer 之前）
+    openai_cfg = get_openai_config(config)
+
     # 启动 API 服务器
     from xcmemory_interest.netapi import APIServer
 
@@ -301,17 +330,20 @@ def main():
         port=config["server"]["port"],
         ws_port=config["server"]["ws_port"],
         debug=args.debug,
+        openai_config=openai_cfg,
     )
 
     # Gradio WebUI（后台线程）
     if args.gradio:
         t = threading.Thread(
             target=_start_gradio_thread,
-            args=(server, "admin", True, args.gradio_port),
+            args=(server, "admin", True, args.gradio_port, openai_cfg, args.debug),
             daemon=True,
         )
         t.start()
         print(f"  Gradio WebUI 启动中 http://127.0.0.1:{args.gradio_port}/ ...")
+        print(f"  LLM Model:    {openai_cfg['model']}")
+        print(f"  LLM BaseURL:  {openai_cfg['base_url']}")
         print("=" * 60)
     else:
         print(f"  Starting server ...")

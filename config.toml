@@ -20,3 +20,8 @@ max_websocket_frame_size = 65536
 
 [admin]
 api_key = 'xi-admin-i60v1a2Ytrqa4GWh6JSvwg7WZOjzxJ0lBGZFDHoY-LI'
+
+[openai]
+api_key = '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'
+base_url = 'https://openrouter.ai/api/v1'
+model = 'xiaomi/mimo-v2-flash'

@@ -75,6 +75,10 @@ class TokenType(Enum):
     READ = auto()
     WRITE = auto()
     ADMIN = auto()
+    # Dry-run 模式
+    DRYRUN = auto()
+    DRY = auto()
+    RUN = auto()
 
 
 KEYWORDS = {
@@ -121,6 +125,10 @@ KEYWORDS = {
     "read": TokenType.READ,
     "write": TokenType.WRITE,
     "admin": TokenType.ADMIN,
+    # Dry-run 模式
+    "dryrun": TokenType.DRYRUN,
+    "dry": TokenType.DRY,
+    "run": TokenType.RUN,
 }
 
 

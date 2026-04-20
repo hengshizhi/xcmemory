@@ -225,6 +225,7 @@ class APIServer:
         port: int = 8080,
         ws_port: Optional[int] = None,
         debug: bool = False,
+        openai_config: Optional[Dict[str, str]] = None,
     ):
         self.database_root = Path(database_root)
         self.database_root.mkdir(parents=True, exist_ok=True)
@@ -232,6 +233,7 @@ class APIServer:
         self.port = port
         self.ws_port = ws_port or (port + 1)  # 默认 WebSocket 端口 = HTTP 端口 + 1
         self.debug = debug
+        self.openai_config = openai_config or {}
 
         # 用户管理器
         self.user_manager = UserManager(str(self.database_root))
@@ -253,10 +255,16 @@ class APIServer:
 
     @property
     def pyapi(self):
-        """延迟加载 PyAPI"""
+        """延迟加载 PyAPI（torch 不可用时优雅降级）"""
         if self._pyapi is None:
-            from ..pyapi.core import PyAPI
-            self._pyapi = PyAPI(str(self.database_root))
+            try:
+                from ..pyapi.core import PyAPI
+                self._pyapi = PyAPI(str(self.database_root))
+            except OSError as e:
+                if "torch" in str(e) or "_C" in str(e) or "DLL" in str(e):
+                    self._pyapi = None
+                    return None
+                raise
         return self._pyapi
 
     def _register_routes(self):
@@ -268,20 +276,26 @@ class APIServer:
         # 系统管理
         self._routes["GET:/api/v1/systems"] = self._handle_list_systems
         self._routes["POST:/api/v1/systems"] = self._handle_create_system
-        self._routes["GET:/api/v1/systems/([^/]+)"] = self._handle_get_system
-        self._routes["DELETE:/api/v1/systems/([^/]+)"] = self._handle_delete_system
-        self._routes["POST:/api/v1/systems/([^/]+)/use"] = self._handle_use_system
+        self._routes["GET:/api/v1/systems/(?P<name>[^/]+)"] = self._handle_get_system
+        self._routes["DELETE:/api/v1/systems/(?P<name>[^/]+)"] = self._handle_delete_system
+        self._routes["POST:/api/v1/systems/(?P<name>[^/]+)/use"] = self._handle_use_system
 
         # 用户管理
         self._routes["GET:/api/v1/users"] = self._handle_list_users
         self._routes["POST:/api/v1/users"] = self._handle_create_user
-        self._routes["GET:/api/v1/users/([^/]+)"] = self._handle_get_user
-        self._routes["DELETE:/api/v1/users/([^/]+)"] = self._handle_delete_user
-        self._routes["POST:/api/v1/users/([^/]+)/generate_key"] = self._handle_generate_key
+        self._routes["GET:/api/v1/users/(?P<username>[^/]+)"] = self._handle_get_user
+        self._routes["DELETE:/api/v1/users/(?P<username>[^/]+)"] = self._handle_delete_user
+        self._routes["POST:/api/v1/users/(?P<username>[^/]+)/generate_key"] = self._handle_generate_key
 
         # 权限管理
         self._routes["POST:/api/v1/permissions"] = self._handle_grant_permission
         self._routes["DELETE:/api/v1/permissions"] = self._handle_revoke_permission
+
+        # LLM 查询
+        self._routes["POST:/api/v1/nl-query"] = self._handle_nl_query
+
+        # LLM 权限管理
+        self._routes["POST:/api/v1/users/(?P<username>[^/]+)/llm-toggle"] = self._handle_llm_toggle
 
         # 健康检查
         self._routes["GET:/health"] = self._handle_health
@@ -654,6 +668,149 @@ class APIServer:
             raise APIError(msg)
 
         return HTTPResponse(body=json.dumps({"message": msg}))
+
+    def _serialize_memory(self, item):
+        """将 Memory 对象（或 dict）转为 JSON 可序列化的 dict"""
+        if isinstance(item, dict):
+            d = {}
+            for k, v in item.items():
+                d[k] = self._serialize_memory(v)
+            return d
+        # 优先使用 to_dict()（Memory/搜索结果等）
+        if hasattr(item, "to_dict"):
+            return self._serialize_memory(item.to_dict())
+        if hasattr(item, "__dict__"):
+            d = {}
+            for k, v in vars(item).items():
+                if k.startswith("_"):
+                    continue
+                # numpy 数组
+                if hasattr(v, "tolist"):
+                    d[k] = v.tolist()
+                # datetime
+                elif hasattr(v, "isoformat"):
+                    d[k] = v.isoformat()
+                # 递归处理
+                elif isinstance(v, dict):
+                    d[k] = self._serialize_memory(v)
+                elif isinstance(v, list):
+                    d[k] = [self._serialize_memory(x) for x in v]
+                elif hasattr(v, "__dict__"):
+                    d[k] = self._serialize_memory(v)
+                else:
+                    try:
+                        json.dumps(v)
+                        d[k] = v
+                    except (TypeError, ValueError):
+                        d[k] = str(v)
+            return d
+        return item
+
+    def _handle_nl_query(self, request: HTTPRequest, auth: AuthContext, params: Dict) -> HTTPResponse:
+        """自然语言查询"""
+        import asyncio
+
+        # 检查 LLM 权限
+        if not auth.llm_enabled:
+            raise ForbiddenError(
+                "LLM query permission required. Ask admin to enable it via "
+                "POST /api/v1/users/<username>/llm-toggle"
+            )
+
+        data = request.get_json()
+        nl_query = data.get("query", "")
+        top_k = int(data.get("top_k", 10))
+
+        if not nl_query:
+            raise APIError("query field is required")
+
+        active = self.pyapi.active_system if self.pyapi else None
+        if not active:
+            raise APIError("No active memory system. Use POST /api/v1/systems/<name>/use first.")
+
+        if not self.openai_config.get("api_key"):
+            raise APIError("LLM not configured on server")
+
+        # 构建 LLM 客户端
+        from openai import AsyncOpenAI
+        llm_client = AsyncOpenAI(
+            api_key=self.openai_config["api_key"],
+            base_url=self.openai_config.get("base_url", "https://openrouter.ai/api/v1"),
+        )
+        model = self.openai_config.get("model", "xiaomi/mimo-v2-flash")
+
+        # 导入延迟避免循环依赖
+        try:
+            from ..nl.pipeline import NLSearchPipeline
+        except ImportError as import_err:
+            if "torch" in str(import_err) or "_C" in str(import_err) or "DLL" in str(import_err):
+                raise APIError(
+                    "torch is not available in this environment. "
+                    "NL query requires torch for vector operations."
+                )
+            raise
+
+        async def _run():
+            pipeline = NLSearchPipeline(
+                llm_client=llm_client,
+                memory_system=active,
+                model=model,
+                debug=self.debug,
+            )
+            return await pipeline.run(nl_query=nl_query, history=[], top_k=top_k)
+
+        result = asyncio.run(_run())
+
+        # 诊断：找出哪个字段无法序列化
+        def _find_unserializable(obj, path=""):
+            if isinstance(obj, (str, int, float, bool, type(None))):
+                return None
+            if isinstance(obj, list):
+                for i, item in enumerate(obj):
+                    f = _find_unserializable(item, f"{path}[{i}]")
+                    if f:
+                        return f
+                return None
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    f = _find_unserializable(v, f"{path}.{k}")
+                    if f:
+                        return f
+                return None
+            # 不在上面的基本类型中 → 无法序列化
+            return f"{path}: {type(obj).__name__}"
+
+        resp_data = {
+            "type": result.get("type"),
+            "query": nl_query,
+            "response": result.get("response", ""),
+            "mql": result.get("mql", ""),
+            "slots": result.get("slots", {}),
+            "result_count": len(result.get("result", [])),
+            "results": [self._serialize_memory(r) for r in result.get("result", [])],
+        }
+
+        try:
+            body = json.dumps(resp_data)
+        except (TypeError, ValueError) as serial_err:
+            bad_field = _find_unserializable(resp_data)
+            raise APIError(f"JSON serialize failed at {bad_field}: {serial_err}")
+
+        return HTTPResponse(body=body)
+
+    def _handle_llm_toggle(self, request: HTTPRequest, auth: AuthContext, params: Dict) -> HTTPResponse:
+        """开启/关闭用户的 LLM 权限"""
+        self._require_admin(auth)
+
+        username = params["username"]
+        data = request.get_json()
+        enabled = bool(data.get("enable", True))
+
+        ok, msg = self.user_manager.set_llm_permission(username, enabled)
+        if not ok:
+            raise APIError(msg)
+
+        return HTTPResponse(body=json.dumps({"message": msg, "username": username, "llm_enabled": enabled}))
 
     def _handle_health(self, request: HTTPRequest, auth: AuthContext = None, params: Dict = None) -> HTTPResponse:
         """健康检查"""

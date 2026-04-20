@@ -54,6 +54,34 @@ class Interpreter:
             return True
         return False
 
+    def set_auth_context(self, auth_context: "AuthContext") -> "Interpreter":
+        """设置认证上下文"""
+        self._context["auth"] = auth_context
+        return self
+
+    def _get_auth_context(self) -> Optional["AuthContext"]:
+        """获取认证上下文"""
+        return self._context.get("auth")
+
+    def _check_permission(self, system_name: str, permission: str) -> bool:
+        """检查权限"""
+        auth = self._get_auth_context()
+        if auth is None:
+            return True  # 无认证上下文时放行
+        from ..user_manager import PermissionType
+        try:
+            perm = PermissionType(permission)
+        except ValueError:
+            perm = PermissionType.READ  # fallback
+        return auth.has_permission(system_name, perm)
+
+    def _check_system_access(self, system_name: str, require_write: bool = False) -> bool:
+        """检查系统访问权限"""
+        auth = self._get_auth_context()
+        if auth is None:
+            return True
+        return auth.has_system_access(system_name, require_write)
+
     def execute(self, sql: str) -> QueryResult:
         """
         执行 MQL 语句
@@ -128,19 +156,8 @@ class Interpreter:
 
         # 获取字段值
         if field in ["time", "subject", "action", "object", "purpose", "result"]:
-            # 从 query_sentence 解析
-            if field == "time":
-                field_value = memory.get("_slot_time", "")
-            elif field == "subject":
-                field_value = memory.get("_slot_subject", "")
-            elif field == "action":
-                field_value = memory.get("_slot_action", "")
-            elif field == "object":
-                field_value = memory.get("_slot_object", "")
-            elif field == "purpose":
-                field_value = memory.get("_slot_purpose", "")
-            elif field == "result":
-                field_value = memory.get("_slot_result", "")
+            # 槽位值直接存在 memory dict 中（如 memory["subject"]）
+            field_value = memory.get(field, "")
         else:
             field_value = memory.get(field)
 

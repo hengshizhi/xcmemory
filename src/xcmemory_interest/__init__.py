@@ -18,36 +18,55 @@ StarDust Memory - Structured Memory Retrieval System:
 
 __version__ = "0.4.0"
 
-# 导出主要接口
-from .vector_db import (
-    ChromaVectorDB,
-    SubspaceSearcher,
-    HybridSearcher,
-    SubspaceReranker,
-    ResultConditioningReranker,
-    DynamicReranker,
-)
-from .embedding_coder import InterestEncoder, QueryEncoder
-from .basic_crud import VecDBCRUD, BasicCRUD
-from .pyapi import PyAPI, MQLInterpreter, MQLResult
-from .lifecycle_manager import (
-    LifecycleManager,
-    ProbabilitySampler,
-    LIFECYCLE_INFINITY,
-)
-from .version_control import (
-    VersionManager,
-    MemoryVersion,
-    VersionDiff,
-    ChangeType,
-)
-from .mql import (
-    Interpreter,
-    QueryResult,
-    parse,
-    MQLError,
-    ParseError,
-)
+# ============================================================================
+# 延迟导入（所有模块都延迟加载，避免 torch DLL 问题时阻塞整个包）
+# ============================================================================
+
+def __getattr__(name):
+    """延迟导入所有模块，避免顶层加载 torch"""
+    _lazy_imports = {
+        # Embedding（torch 依赖）
+        "InterestEncoder": (".embedding_coder", "InterestEncoder"),
+        "QueryEncoder": (".embedding_coder", "QueryEncoder"),
+        # CRUD（torch 依赖）
+        "VecDBCRUD": (".basic_crud", "VecDBCRUD"),
+        "BasicCRUD": (".basic_crud", "BasicCRUD"),
+        # Vector DB（chromadb，间接 torch 依赖）
+        "ChromaVectorDB": (".vector_db", "ChromaVectorDB"),
+        "SubspaceSearcher": (".vector_db", "SubspaceSearcher"),
+        "HybridSearcher": (".vector_db", "HybridSearcher"),
+        "SubspaceReranker": (".vector_db", "SubspaceReranker"),
+        "ResultConditioningReranker": (".vector_db", "ResultConditioningReranker"),
+        "DynamicReranker": (".vector_db", "DynamicReranker"),
+        # PyAPI（torch 依赖）
+        "PyAPI": (".pyapi", "PyAPI"),
+        "MQLInterpreter": (".pyapi", "MQLInterpreter"),
+        "MQLResult": (".pyapi", "MQLResult"),
+        # Lifecycle
+        "LifecycleManager": (".lifecycle_manager", "LifecycleManager"),
+        "ProbabilitySampler": (".lifecycle_manager", "ProbabilitySampler"),
+        "LIFECYCLE_INFINITY": (".lifecycle_manager", "LIFECYCLE_INFINITY"),
+        # Version Control
+        "VersionManager": (".version_control", "VersionManager"),
+        "MemoryVersion": (".version_control", "MemoryVersion"),
+        "VersionDiff": (".version_control", "VersionDiff"),
+        "ChangeType": (".version_control", "ChangeType"),
+        # MQL
+        "Interpreter": (".mql", "Interpreter"),
+        "QueryResult": (".mql", "QueryResult"),
+        "parse": (".mql", "parse"),
+        "MQLError": (".mql", "MQLError"),
+        "ParseError": (".mql", "ParseError"),
+    }
+
+    if name in _lazy_imports:
+        module_path, attr_name = _lazy_imports[name]
+        from . import importlib
+        module = importlib.import_module(module_path, __package__)
+        return getattr(module, attr_name)
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # CRUD
