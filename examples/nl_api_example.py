@@ -58,7 +58,7 @@ async def http_mql_query(mql: str):
     调用 POST /api/v1/query，执行原生 MQL 语句
 
     Args:
-        mql: MQL 查询语句，如 "SELECT * WHERE interest ~= 'python'"
+        mql: MQL 查询语句，如 "SELECT * FROM memories WHERE interest LIKE 'python'"
 
     Returns:
         dict，包含 data（结果列表）、type、message 等字段
@@ -216,7 +216,7 @@ async def main():
             print(f"  [{i}] {str(r.get('content', ''))[:60]}...")
 
     print("\n--- 3. HTTP: query（原生 MQL）---")
-    result = await http_mql_query("SELECT * WHERE interest ~= 'python' LIMIT 3")
+    result = await http_mql_query("SELECT * FROM memories WHERE interest LIKE 'python' LIMIT 3")
     print(f"MQL执行成功，结果数: {len(result.get('data', []))}")
 
 
