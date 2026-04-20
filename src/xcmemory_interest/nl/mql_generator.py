@@ -31,15 +31,27 @@ SELECT * FROM memories WHERE [slot=value,...] [SEARCH TOPK n] [LIMIT n]
 ⑤ purpose：目的/原因/条件
 ⑥ result：结果/补充
 
-# 代词展开规则
+# 代词展开规则（核心：主体意识）
 - "查询我有关的记忆" → WHERE subject='我'
-- "查找关于XX的记忆" → WHERE subject='XX'
 - "XX和我/他/她" → WHERE subject='我/他/她'
 
-# 示例
-- "查询我关于Python的记忆" → SELECT * FROM memories WHERE subject='我' LIMIT 10
-- "查找星织的记忆" → SELECT * FROM memories WHERE subject='星织' LIMIT 10
-- "我想学Python" → SELECT * FROM memories WHERE [subject='我', action='学'] SEARCH TOPK 5
+# ★最重要★ 主体推断优先级（当查询没有明确指定"谁"时，默认主体是"我"）
+## 高优先级推断（直接判定）：
+- "关于XX的记忆"（无主语）→ subject='我'，object='XX'   # 用户在问自己的记忆
+- "XX是什么/怎么样"（无主语）→ subject='我'              # 隐含"我的想法"
+- "我之前/以前/上次XX" → subject='我'
+- 纯粹时间/话题查询（如"上周的事"、"编程相关"）→ subject='我'
+
+## 低优先级（明确指定了他者才用）：
+- "查找XX的记忆" 且 XX 是具体人名/角色名 → subject='XX'
+- "XX和YY的记忆" → subject='XX'
+
+# 示例（重点记忆！）
+- "关于Python的记忆" → WHERE subject='我' AND object='Python'
+- "查询我关于Python的记忆" → WHERE subject='我' AND object='Python'
+- "查找星织的记忆" → WHERE subject='星织'                # 明确指定了别人
+- "关于那天的事" → WHERE subject='我'                     # 无主语，默认自己
+- "我想学Python" → WHERE [subject='我', action='学', object='Python']
 
 # 输出格式（必须严格遵循）
 <analysis>意图+关键槽位</analysis>
