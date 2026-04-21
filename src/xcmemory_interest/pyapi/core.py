@@ -133,6 +133,7 @@ class MemorySystem:
         vocab_size: int = 10000,
         enable_interest_mode: bool = True,
         similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+        holder: str = "我",
     ):
         """
         初始化 MemorySystem（延迟初始化，调用 initialize() 完成初始化）
@@ -143,12 +144,14 @@ class MemorySystem:
             vocab_size: InterestEncoder 词汇表大小
             enable_interest_mode: 是否启用兴趣记忆模式（False 则跳过 InterestEncoder 相关计算）
             similarity_threshold: 相似度阈值，超过此值视为相似（仅在 interest_mode 下生效）
+            holder: 记忆系统持有者名称，NL 查询时用于将"我"映射到正确的人称
         """
         self.name = name
         self.persist_directory = Path(persist_directory) / name
         self.vocab_size = vocab_size
         self.enable_interest_mode = enable_interest_mode
         self.similarity_threshold = similarity_threshold
+        self.holder = holder  # 记忆系统持有者（NL→MQL 时替换"我"用）
 
         # 各数据库路径
         self.vec_db_path = str(self.persist_directory / "vec_db")
@@ -1114,6 +1117,33 @@ class PyAPI:
             self.set_active_system(self._last_active_system)
 
     # =========================================================================
+    # 持有者（holder）配置
+    # =========================================================================
+
+    def _load_holder_from_config(self) -> str:
+        """从 config.toml 读取默认 holder（记忆系统持有者名称）"""
+        try:
+            config_path = self.persist_directory.parent.parent / "config.toml"
+            if config_path.exists():
+                try:
+                    import tomllib
+                except ImportError:
+                    import tomli as tomllib
+                with open(config_path, "rb") as f:
+                    cfg = tomllib.load(f)
+                return cfg.get("system", {}).get("holder", "我")
+        except Exception:
+            pass
+        return "我"
+
+    def _get_system_holder(self, name: str) -> str:
+        """获取指定记忆系统的 holder，优先从元数据读，否则用配置默认值"""
+        meta = self._get_system_meta(name)
+        if meta.get("holder"):
+            return meta["holder"]
+        return self._load_holder_from_config()
+
+    # =========================================================================
     # 元数据管理
     # =========================================================================
 
@@ -1186,12 +1216,16 @@ class PyAPI:
                 "如需使用兴趣模型，请等待后续版本。"
             )
 
+        # 从 config.toml 读取默认 holder
+        holder = self._load_holder_from_config()
+
         system = MemorySystem(
             name=name,
             persist_directory=str(self.persist_directory),
             vocab_size=self.vocab_size,
             enable_interest_mode=enable_interest_mode,
             similarity_threshold=similarity_threshold,
+            holder=holder,
         )
 
         if initialize:
@@ -1200,11 +1234,12 @@ class PyAPI:
         self._systems[name] = system
         self._active_system = name
 
-        # 保存元数据
+        # 保存元数据（含 holder）
         self._save_meta()
         self._set_system_meta(name, {
             "enable_interest_mode": enable_interest_mode,
             "similarity_threshold": similarity_threshold,
+            "holder": holder,
             "created_at": datetime.now().isoformat(),
         })
 
@@ -1221,6 +1256,27 @@ class PyAPI:
             MemorySystem 实例，不存在返回 None
         """
         return self._systems.get(name)
+
+    def set_system_holder(self, name: str, holder: str) -> bool:
+        """
+        设置记忆系统的持有者名称。
+
+        Args:
+            name: 记忆系统名称
+            holder: 新的持有者名称
+
+        Returns:
+            True 成功，False 系统不存在
+        """
+        system = self._systems.get(name)
+        if not system:
+            return False
+        system.holder = holder
+        # 更新元数据持久化
+        meta = self._get_system_meta(name)
+        meta["holder"] = holder
+        self._save_meta()
+        return True
 
     def get_or_create_system(
         self,
@@ -1340,6 +1396,7 @@ class PyAPI:
                     vocab_size=self.vocab_size,
                     enable_interest_mode=enable_interest_mode,
                     similarity_threshold=similarity_threshold,
+                    holder=self._get_system_holder(name),
                 )
                 system.initialize()
                 self._systems[name] = system

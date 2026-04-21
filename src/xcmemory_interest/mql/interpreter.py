@@ -115,6 +115,17 @@ class Interpreter:
         else:
             raise ExecutionError(f"Unknown AST type: {type(ast)}")
 
+    # 六个标准槽位
+    _SLOTS = ("time", "subject", "action", "object", "purpose", "result")
+
+    def _any_slot_contains(self, memory: Dict, keyword: str) -> bool:
+        """检查记忆任意槽位是否包含 keyword（子串匹配）"""
+        kw = self._strip_quotes(keyword)
+        for slot in self._SLOTS:
+            if kw in (memory.get(slot, "") or ""):
+                return True
+        return False
+
     def _get_memory_system(self) -> "MemorySystem":
         """获取默认的记忆系统"""
         if "mem" in self._context:
@@ -158,6 +169,10 @@ class Interpreter:
         field = condition.field
         operator = condition.operator
         value = self._strip_quotes(condition.value)
+
+        # ── 跨槽位 bare string 条件：field="" 表示匹配任意槽位 ──
+        if field == "" and operator == "any":
+            return self._any_slot_contains(memory, condition.value)
 
         # 获取字段值
         if field in ["time", "subject", "action", "object", "purpose", "result"]:

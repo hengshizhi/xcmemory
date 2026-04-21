@@ -7,6 +7,10 @@ host = '0.0.0.0'
 port = 8080
 ws_port = 8081
 
+[system]
+# 记忆系统持有者名称（NL查询时用于将"我"映射到正确的人称）
+holder = "星织"
+
 [lifecycle_manager]
 infinity = 999999
 short_term_cap = 604800

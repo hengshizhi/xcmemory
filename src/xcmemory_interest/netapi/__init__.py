@@ -277,6 +277,7 @@ class APIServer:
         self._routes["GET:/api/v1/systems"] = self._handle_list_systems
         self._routes["POST:/api/v1/systems"] = self._handle_create_system
         self._routes["GET:/api/v1/systems/(?P<name>[^/]+)"] = self._handle_get_system
+        self._routes["PUT:/api/v1/systems/(?P<name>[^/]+)/holder"] = self._handle_set_system_holder
         self._routes["DELETE:/api/v1/systems/(?P<name>[^/]+)"] = self._handle_delete_system
         self._routes["POST:/api/v1/systems/(?P<name>[^/]+)/use"] = self._handle_use_system
 
@@ -543,6 +544,24 @@ class APIServer:
 
         stats = system.get_stats()
         return HTTPResponse(body=json.dumps(stats))
+
+    def _handle_set_system_holder(self, request: HTTPRequest, auth: AuthContext, params: Dict) -> HTTPResponse:
+        """设置记忆系统持有者"""
+        name = params["name"]
+
+        if not auth.is_superadmin and name not in auth.permissions:
+            raise ForbiddenError(f"No permission to access system '{name}'")
+
+        body = request.get_json()
+        holder = body.get("holder", "")
+        if not holder:
+            raise APIError("holder field is required", status_code=400)
+
+        ok = self.pyapi.set_system_holder(name, holder)
+        if not ok:
+            raise APIError(f"System '{name}' not found", status_code=404)
+
+        return HTTPResponse(body=json.dumps({"message": f"Holder set to '{holder}' for system '{name}'"}))
 
     def _handle_delete_system(self, request: HTTPRequest, auth: AuthContext, params: Dict) -> HTTPResponse:
         """删除记忆系统"""

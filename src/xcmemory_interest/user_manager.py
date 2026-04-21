@@ -157,7 +157,7 @@ class UserManager:
                 (self.DEFAULT_ADMIN,)
             )
             if cursor.fetchone() is None:
-                conn.            conn.execute(
+                conn.execute(
                 "INSERT INTO users (username, api_key_hash, is_superadmin, created_at, updated_at) VALUES (?, ?, 1, ?, ?)",
                 (self.DEFAULT_ADMIN, "", now, now)
             )

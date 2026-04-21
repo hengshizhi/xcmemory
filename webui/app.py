@@ -360,6 +360,21 @@ def do_nl_query(nl_query: str, top_k: int):
         lines = [f"🤖 自然语言查询: {nl_query}"]
         items = result.get("result", [])
         lines.append(f"📊 检索到 {len(items)} 条记忆")
+
+        # 显示 LLM 调用和重查统计
+        llm_calls = result.get("llm_calls", 0)
+        retry_count = result.get("retry_count", 0)
+        if retry_count > 0:
+            lines.append(f"🔄 LLM 调用 {llm_calls} 次（含重查 {retry_count} 次）")
+        else:
+            lines.append(f"🔄 LLM 调用 {llm_calls} 次")
+
+        # 显示执行的步骤摘要
+        steps = result.get("steps_summary", [])
+        if steps:
+            for s in steps:
+                lines.append(f"   {s}")
+
         lines.append("")
         if result.get("mql"):
             lines.append(f"📝 生成 MQL:\n   {result['mql']}")
@@ -368,12 +383,6 @@ def do_nl_query(nl_query: str, top_k: int):
         if nl_resp:
             lines.append(f"💬 {nl_resp}")
             lines.append("")
-        if result.get("slots"):
-            slots = result["slots"]
-            slot_parts = [f"{k}={v}" for k, v in slots.items() if v and v not in ("<无>", "<空>")]
-            if slot_parts:
-                lines.append(f"🎯 槽位: {', '.join(slot_parts)}")
-                lines.append("")
         if items:
             lines.append("📄 检索结果:")
             for i, item in enumerate(items, 1):
@@ -387,6 +396,7 @@ def do_nl_query(nl_query: str, top_k: int):
                 lines.append(f"     [{detail}]")
         else:
             lines.append("📄 未检索到相关记忆")
+
         return "\n".join(lines)
     except Exception as e:
         import traceback
@@ -415,6 +425,62 @@ def do_switch_system(system_name):
         return err
     _active_system_name = system_name
     return f"✅ 已切换到: {system_name}"
+
+
+def do_set_holder(holder_name):
+    """设置当前活跃记忆系统的持有者名称"""
+    if _api_server is None or not _active_system_name:
+        return "❌ 未选择系统"
+    if not holder_name.strip():
+        return "❌ 持有者名称不能为空"
+    import json, base64
+    credentials = base64.b64encode(b"admin:admin").decode()
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{_api_server.port}/api/v1/systems/{_active_system_name}/holder",
+            data=json.dumps({"holder": holder_name.strip()}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Basic {credentials}",
+            },
+            method="PUT",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+            return f"✅ {data.get('message', '设置成功')}"
+    except Exception as e:
+        return f"❌ 设置失败: {e}"
+
+
+def do_get_holder():
+    """获取当前活跃记忆系统的持有者名称"""
+    if _api_server is None or _api_server.pyapi.active_system is None:
+        return ""
+    return getattr(_api_server.pyapi.active_system, "holder", "我")
+
+
+def do_reset_llm_stats():
+    """重置 LLM 调用计数器"""
+    import sys
+    sys.path.insert(0, "o:/project/xcmemory_interest/src")
+    from xcmemory_interest.nl.pipeline import reset_llm_stats
+    reset_llm_stats()
+    return "✅ LLM 计数器已重置"
+
+
+def do_get_llm_stats_text():
+    """获取 LLM 统计文本"""
+    import sys
+    sys.path.insert(0, "o:/project/xcmemory_interest/src")
+    from xcmemory_interest.nl.pipeline import get_llm_stats
+    s = get_llm_stats()
+    total = s["total_calls"]
+    queries = s["query_count"]
+    avg = total / queries if queries > 0 else 0
+    avg_str = f"{avg:.2f}" if queries > 0 else "N/A"
+    return (f"累计 {total} 次 LLM 调用 / {queries} 次查询，"
+            f"平均 {avg_str} 次/查询")
 
 
 # ============================================================================
@@ -530,6 +596,23 @@ def build_app(pre_auth: bool = False, admin_user: str = "admin"):
                     cs_btn = gr.Button("➕ 创建系统")
                 cs_status = gr.Textbox(label="状态", interactive=False)
 
+                gr.Markdown("---")
+                gr.Markdown("**持有者名称（NL 查询时用于将'我'映射到正确的人称）**")
+                holder_in = gr.Textbox(
+                    label="持有者",
+                    placeholder="星织",
+                    value=do_get_holder(),
+                )
+                holder_save_btn = gr.Button("💾 保存持有者")
+                holder_status = gr.Textbox(label="状态", interactive=False)
+
+                gr.Markdown("---")
+                gr.Markdown("**LLM 统计**")
+                stats_display = gr.Textbox(label="统计", value=do_get_llm_stats_text(), interactive=False)
+                stats_refresh_btn = gr.Button("🔄 刷新统计")
+                stats_reset_btn = gr.Button("🔢 重置计数器")
+                stats_reset_status = gr.Textbox(label="状态", interactive=False)
+
         # =========================================================================
         # 事件绑定（简洁，不链式触发）
         # =========================================================================
@@ -586,6 +669,22 @@ def build_app(pre_auth: bool = False, admin_user: str = "admin"):
                 do_create_system,
                 inputs=[ns_name],
                 outputs=[cs_status],
+            )
+
+            holder_save_btn.click(
+                do_set_holder,
+                inputs=[holder_in],
+                outputs=[holder_status],
+            )
+
+            stats_refresh_btn.click(
+                do_get_llm_stats_text,
+                outputs=[stats_display],
+            )
+
+            stats_reset_btn.click(
+                do_reset_llm_stats,
+                outputs=[stats_reset_status],
             )
 
     return app
