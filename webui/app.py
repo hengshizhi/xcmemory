@@ -1,6 +1,5 @@
 """
 星尘记忆系统 - Gradio WebUI
-极简版：避免复杂事件链导致的 flush 循环
 """
 
 import os
@@ -25,8 +24,8 @@ _active_system_name = None
 
 SLOT_NAMES = ["time", "subject", "action", "object", "purpose", "result"]
 TABLE_HEADERS = ["ID", "time", "subject", "action", "object", "purpose", "result", "内容(前80字)", "lifecycle", "创建时间", "更新时间"]
-SEARCH_HEADERS = ["ID", "time", "subject", "action", "object", "purpose", "result", "内容(前80字)", "lifecycle", "距离", "匹配槽位"]
-
+SEARCH_HEADERS = ["ID", "time", "subject", "action", "object", "purpose", "result", "lifecycle", "距离", "匹配槽位"]
+MQL_HEADERS = ["ID", "time", "subject", "action", "object", "purpose", "result", "内容(前80字)", "lifecycle", "创建时间"]
 
 # ============================================================================
 # 初始化（由 start_server.py 调用）
@@ -115,11 +114,30 @@ def _build_df(rows_data, headers):
     return pd.DataFrame(rows, columns=headers)
 
 
-MQL_HEADERS = ["ID", "time", "subject", "action", "object", "purpose", "result", "内容(前80字)", "lifecycle", "创建时间"]
+def _build_search_df(rows_data):
+    if not rows_data:
+        return pd.DataFrame(columns=SEARCH_HEADERS)
+    rows = []
+    for row in rows_data:
+        if isinstance(row, dict):
+            parts = _parse_sentence_parts(row.get("query_sentence", ""))
+            content_val = str(row.get("content", "") or "")[:80]
+            rows.append({
+                "ID": str(row.get("id", "")),
+                "time": parts.get("time", ""),
+                "subject": parts.get("subject", ""),
+                "action": parts.get("action", ""),
+                "object": parts.get("object", ""),
+                "purpose": parts.get("purpose", ""),
+                "result": parts.get("result", ""),
+                "lifecycle": str(row.get("lifecycle", "")),
+                "距离": f"{row.get('distance', 0):.4f}" if row.get("distance") is not None else "",
+                "匹配槽位": row.get("match_count", ""),
+            })
+    return pd.DataFrame(rows, columns=SEARCH_HEADERS)
 
 
 def _build_mql_df(rows_data):
-    """将 MQL SELECT 结果格式化为 DataFrame，用于表格展示。"""
     if not rows_data:
         return pd.DataFrame(columns=MQL_HEADERS)
     rows = []
@@ -140,27 +158,6 @@ def _build_mql_df(rows_data):
                 "创建时间": str(row.get("created_at", ""))[:16] if row.get("created_at") else "",
             })
     return pd.DataFrame(rows, columns=MQL_HEADERS)
-    if not rows_data:
-        return pd.DataFrame(columns=SEARCH_HEADERS)
-    rows = []
-    for row in rows_data:
-        if isinstance(row, dict):
-            parts = _parse_sentence_parts(row.get("query_sentence", ""))
-            content_val = str(row.get("content", "") or "")[:80]
-            rows.append({
-                "ID": str(row.get("id", "")),
-                "time": parts.get("time", ""),
-                "subject": parts.get("subject", ""),
-                "action": parts.get("action", ""),
-                "object": parts.get("object", ""),
-                "purpose": parts.get("purpose", ""),
-                "result": parts.get("result", ""),
-                "内容(前80字)": content_val + ("..." if len(str(row.get("content", "") or "")) > 80 else ""),
-                "lifecycle": str(row.get("lifecycle", "")),
-                "距离": row.get("distance", ""),
-                "匹配槽位": row.get("match_count", ""),
-            })
-    return pd.DataFrame(rows, columns=SEARCH_HEADERS)
 
 
 def _exec_mql(mql: str):
@@ -186,12 +183,23 @@ def _exec_mql(mql: str):
 # ============================================================================
 
 def do_refresh():
-    if _api_server is None or _api_server.pyapi.active_system is None:
-        return pd.DataFrame(columns=TABLE_HEADERS), "ℹ️ 无活跃系统"
-    result, err = _exec_mql("SELECT * FROM memories ORDER BY created_at DESC LIMIT 200")
-    if err:
-        return pd.DataFrame(columns=TABLE_HEADERS), err
-    return _build_df(result.data if result.data else [], TABLE_HEADERS), "✅ 已刷新"
+    if _api_server is None:
+        return pd.DataFrame(columns=TABLE_HEADERS), "❌ _api_server 未初始化"
+    if _api_server.pyapi is None:
+        return pd.DataFrame(columns=TABLE_HEADERS), "❌ pyapi 未初始化"
+    if _api_server.pyapi.active_system is None:
+        return pd.DataFrame(columns=TABLE_HEADERS), f"❌ 无活跃系统 (active_system_name={_api_server.pyapi.active_system_name})"
+    sys_name = _api_server.pyapi.active_system.name
+    try:
+        result, err = _exec_mql("SELECT * FROM memories ORDER BY created_at DESC LIMIT 200")
+        if err:
+            return pd.DataFrame(columns=TABLE_HEADERS), f"[{sys_name}] {err}"
+        data = result.data if result.data else []
+        df = _build_df(data, TABLE_HEADERS)
+        return df, f"✅ [{sys_name}] 刷新成功 ({len(data)} 条)"
+    except Exception as e:
+        import traceback
+        return pd.DataFrame(columns=TABLE_HEADERS), f"❌ [{sys_name}] 刷新异常: {e}\n{traceback.format_exc()}"
 
 
 def do_add(time_v, subject_v, action_v, object_v, purpose_v, result_v, content, lifecycle):
@@ -255,39 +263,9 @@ def do_fullspace_search(time_v, subject_v, action_v, object_v, purpose_v, result
 # MQL查询
 # ============================================================================
 
-def _fmt_mql_result(result):
-    """统一格式化 MQL 结果，返回格式化的多行字符串。"""
-    if result is None:
-        return "⚠️ 无结果（未绑定记忆系统）"
-
-    rows = result.data if result.data is not None else []
-    affected = result.affected_rows if result.affected_rows is not None else len(rows)
-    msg = result.message or ""
-
-    lines = []
-
-    # 头信息：操作类型 + 影响行数
-    op_map = {"select": "查询", "insert": "写入", "update": "更新", "delete": "删除", "use": "切换"}
-    op = op_map.get(result.type, result.type or "执行")
-    lines.append(f"📊 {op}，影响 {affected} 行")
-
-    # 数据行
-    if rows:
-        lines.append("─" * 40)
-        for row in rows:
-            lines.append(f"  {row}")
-
-    # 补充消息（如有）
-    if msg and msg not in ("", "OK", "Success"):
-        lines.append(f"📝 {msg}")
-
-    return "\n".join(lines) if lines else "✅ 执行成功（无返回数据）"
-
-
 def do_mql(mql_script):
-    """执行 MQL：SELECT 结果展示为表格，其他返回状态消息。"""
     if not mql_script.strip():
-        return "❌ 请输入 MQL 语句", None
+        return None, "❌ 请输入 MQL 语句"
 
     try:
         from xcmemory_interest.mql.interpreter_extended import InterpreterExtended
@@ -300,7 +278,6 @@ def do_mql(mql_script):
         if ";" in mql_script.strip():
             results = interpreter.execute_script(mql_script.strip())
             total = sum(r.affected_rows or 0 for r in results)
-            # 多语句：总结果用表格，状态用消息
             first_with_data = next((r for r in results if r.data), None)
             if first_with_data:
                 return _build_mql_df(first_with_data.data), f"✅ {len(results)} 条语句，合计影响 {total} 行"
@@ -312,13 +289,11 @@ def do_mql(mql_script):
             msg = result.message or ""
 
             if rows:
-                # 有数据 → 表格 + 状态
                 status = f"📊 {result.type or '查询'}，影响 {affected} 行"
                 if msg and msg not in ("OK", "Success", ""):
                     status += f" | {msg}"
                 return _build_mql_df(rows), status
             else:
-                # 无数据 → 纯消息
                 if msg:
                     return None, f"📊 {affected} 行 | {msg}"
                 return None, f"📊 {affected} 行"
@@ -361,7 +336,6 @@ def do_nl_query(nl_query: str, top_k: int):
         items = result.get("result", [])
         lines.append(f"📊 检索到 {len(items)} 条记忆")
 
-        # 显示 LLM 调用和重查统计
         llm_calls = result.get("llm_calls", 0)
         retry_count = result.get("retry_count", 0)
         if retry_count > 0:
@@ -369,7 +343,6 @@ def do_nl_query(nl_query: str, top_k: int):
         else:
             lines.append(f"🔄 LLM 调用 {llm_calls} 次")
 
-        # 显示执行的步骤摘要
         steps = result.get("steps_summary", [])
         if steps:
             for s in steps:
@@ -407,28 +380,45 @@ def do_nl_query(nl_query: str, top_k: int):
 # 系统管理（管理员）
 # ============================================================================
 
-def do_create_system(name, enable_interest):
+def do_create_system(name):
+    """创建新记忆系统"""
     if not name.strip():
-        return "❌ 系统名称不能为空", None
+        return "❌ 系统名称不能为空"
     result, err = _exec_mql(f"CREATE DATABASE {name.strip()}")
     if err:
-        return err, None
-    return f"✅ 系统 '{name}' 已创建", None
+        return err
+    return f"✅ 系统 '{name}' 已创建"
 
 
 def do_switch_system(system_name):
+    """切换活跃记忆系统"""
     global _active_system_name
     if _api_server is None or not system_name:
-        return "❌ 未选择系统"
-    result, err = _exec_mql(f"USE {system_name}")
-    if err:
-        return err
-    _active_system_name = system_name
-    return f"✅ 已切换到: {system_name}"
+        return pd.DataFrame(columns=TABLE_HEADERS), "❌ 未选择系统", gr.update()
+
+    try:
+        _api_server.pyapi.set_active_system(system_name)
+        _active_system_name = system_name
+    except Exception as e:
+        return pd.DataFrame(columns=TABLE_HEADERS), f"❌ 切换失败: {e}", gr.update()
+
+    all_names = [s["name"] for s in _api_server.pyapi.list_all_systems()]
+    updated_dropdown = gr.update(choices=all_names, value=system_name)
+
+    # 刷新记忆列表
+    try:
+        result, err = _exec_mql("SELECT * FROM memories ORDER BY created_at DESC LIMIT 200")
+        if err:
+            return pd.DataFrame(columns=TABLE_HEADERS), f"[{system_name}] {err}", updated_dropdown
+        data = result.data if result.data else []
+        df = _build_df(data, TABLE_HEADERS)
+        return df, f"✅ [{system_name}] 已切换，{len(data)} 条记忆", updated_dropdown
+    except Exception as e:
+        import traceback
+        return pd.DataFrame(columns=TABLE_HEADERS), f"❌ [{system_name}] {e}", updated_dropdown
 
 
 def do_set_holder(holder_name):
-    """设置当前活跃记忆系统的持有者名称"""
     if _api_server is None or not _active_system_name:
         return "❌ 未选择系统"
     if not holder_name.strip():
@@ -454,15 +444,12 @@ def do_set_holder(holder_name):
 
 
 def do_get_holder():
-    """获取当前活跃记忆系统的持有者名称"""
     if _api_server is None or _api_server.pyapi.active_system is None:
         return ""
     return getattr(_api_server.pyapi.active_system, "holder", "我")
 
 
 def do_reset_llm_stats():
-    """重置 LLM 调用计数器"""
-    import sys
     sys.path.insert(0, "o:/project/xcmemory_interest/src")
     from xcmemory_interest.nl.pipeline import reset_llm_stats
     reset_llm_stats()
@@ -470,8 +457,6 @@ def do_reset_llm_stats():
 
 
 def do_get_llm_stats_text():
-    """获取 LLM 统计文本"""
-    import sys
     sys.path.insert(0, "o:/project/xcmemory_interest/src")
     from xcmemory_interest.nl.pipeline import get_llm_stats
     s = get_llm_stats()
@@ -479,12 +464,11 @@ def do_get_llm_stats_text():
     queries = s["query_count"]
     avg = total / queries if queries > 0 else 0
     avg_str = f"{avg:.2f}" if queries > 0 else "N/A"
-    return (f"累计 {total} 次 LLM 调用 / {queries} 次查询，"
-            f"平均 {avg_str} 次/查询")
+    return f"累计 {total} 次 LLM 调用 / {queries} 次查询，平均 {avg_str} 次/查询"
 
 
 # ============================================================================
-# 构建 Gradio UI（极简版，规避 flush 循环）
+# 构建 Gradio UI
 # ============================================================================
 
 _CSS = """
@@ -494,18 +478,23 @@ _CSS = """
 
 
 def build_app(pre_auth: bool = False, admin_user: str = "admin"):
-    """极简版 UI，避免复杂事件链"""
+    # 初始化时从 PyAPI 取完整的系统列表
+    _all_system_names = []
+    _init_value = None
+    if _api_server and _api_server.pyapi:
+        _all_system_names = [s["name"] for s in _api_server.pyapi.list_all_systems()]
+        _init_value = _active_system_name or (_all_system_names[0] if _all_system_names else None)
 
     with gr.Blocks(title="星尘记忆系统", css=_CSS, theme=gr.themes.Soft()) as app:
 
         gr.Markdown("## 🌟 星尘记忆系统")
 
-        # ---- 顶部：系统切换 + 刷新 ----
+        # ---- 顶部：系统切换 ----
         with gr.Row():
             system_sel = gr.Dropdown(
                 label="记忆系统",
-                choices=[_active_system_name] if _active_system_name else [],
-                value=_active_system_name,
+                choices=_all_system_names,
+                value=_init_value,
                 scale=4,
             )
             switch_btn = gr.Button("🔄 切换系统", scale=1)
@@ -614,13 +603,13 @@ def build_app(pre_auth: bool = False, admin_user: str = "admin"):
                 stats_reset_status = gr.Textbox(label="状态", interactive=False)
 
         # =========================================================================
-        # 事件绑定（简洁，不链式触发）
+        # 事件绑定
         # =========================================================================
 
         switch_btn.click(
             do_switch_system,
             inputs=[system_sel],
-            outputs=[status_out],
+            outputs=[table_out, status_out, system_sel],
         )
 
         refresh_btn.click(

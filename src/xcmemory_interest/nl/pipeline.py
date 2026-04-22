@@ -52,20 +52,22 @@ def reset_llm_stats():
 # =============================================================================
 
 RESULT_GENERATION_PROMPT = """# Task
-你是一个记忆管家，根据检索到的记忆，用自然语言回答用户的问题。
+你是 {holder}，正在回忆自己的记忆来回答问题。你是在自问自答——用第一人称，从自己的视角出发。
 
-# 用户原始问题
+# 问题
 {query}
 
 # 检索到的记忆（共 {count} 条）
 {memories_text}
 
 # 回答要求
-1. 用自然语言总结这些记忆，语气像在回忆往事
-2. 如果记忆为空，诚实说"暂时没有相关记忆"
-3. 每条记忆用一句话概括，突出关键信息
-4. 回答要像在与用户对话，不要罗列数据
+1. 用第一人称回答，你就是 {holder}，这些是你的亲身记忆
+2. 语气自然简练，像在心里默默回忆，不要用"根据记忆"、"用户"等旁观者措辞
+3. 如果记忆为空，简短说"我暂时想不起相关的事"
+4. 提炼记忆中的关键信息，用自己的话简要概括，不要逐条罗列
 5. 涉及时间/日期时，换算为相对时间（如"昨天"、"上周"）更自然
+6. 控制篇幅：回答不超过 5-8 句话，抓住重点即可，不要写长文
+7. ★禁止输出动作描写★：不要写括号动作（如"（轻轻放下书）"、"（微笑）"等），这是内心回忆，不是舞台表演
 """
 
 # Stage 6: 反思审查（简化版——只判断够不够，不给MQL建议）
@@ -82,14 +84,15 @@ REFLECTION_REVIEW_PROMPT = """# Task
 {memories_text}
 
 # 判断标准
-**足够（输出）**：问题有具体答案且 NL 回答已涵盖，或问题偏开放但 NL 回答内容充实（>=2句）
+**足够（输出）**：检索到记忆且 NL 回答已实质性回答了问题
 
 **不够（重查）**的典型场景：
-1. NL 回答极短（<5字）或只有标点 → 检索结果根本没有命中主题
-2. NL 回答说"没有相关记忆"但用户问题应该是有记忆的 → subject 映射错误
-3. NL 回答内容与问题明显不符 → 检索方向错了
-4. 问题涉及多维度但 NL 回答单一 → 遗漏了某些方面的记忆
-5. 记忆中有相关内容但 NL 回答没有涵盖 → 回答不完整
+1. 检索到 0 条记忆，但用户的问题不太可能是毫无记忆的 → subject 映射错误或 MQL 语法错误
+2. NL 回答说"没有相关记忆"或"暂时想不起"但问题应该有记忆 → 检索失败
+3. NL 回答极短（<5字）或只有标点 → 检索结果根本没有命中主题
+4. NL 回答内容与问题明显不符 → 检索方向错了
+5. 问题涉及多维度但 NL 回答单一 → 遗漏了某些方面的记忆
+6. 记忆中有相关内容但 NL 回答没有涵盖 → 回答不完整
 
 # 输出格式（严格遵循）
 <retry>YES/NO</retry>
@@ -100,6 +103,9 @@ REFLECTION_REVIEW_PROMPT = """# Task
 # 重查MQL生成：解析反思提示，生成改进版MQL
 REGENERATE_MQL_PROMPT = """# Task
 你是一个 MQL 检索专家。用户刚刚进行了一次 NL 查询，但检索结果不理想，你需要根据反思提示重新生成 MQL。
+
+# 当前时间
+{current_date}
 
 # 用户原始问题
 {query}
@@ -117,6 +123,7 @@ REGENERATE_MQL_PROMPT = """# Task
 4. 如果反思提示说"内容太少"，可以增加 LIMIT 或去掉严格限制
 5. 如果反思提示说"应该查XX方面"，需要在 MQL 中体现这个方向
 6. 必须生成合法的 MQL 语句
+7. 涉及相对时间词时，根据当前时间换算为绝对年份/月份
 
 # 输出格式（严格遵循）
 <mql>改进后的 MQL 语句</mql>
@@ -394,9 +401,14 @@ class NLSearchPipeline:
         if top_k < 0:
             steps_summary.append("5.混合重排→跳过（top_k=-1，LLM自行决定）")
         elif "GRAPH" not in state["mql"].upper():
-            reranked = await self.hybrid.search(state["query"], top_k=top_k)
-            state["result"] = reranked
-            steps_summary.append(f"5.混合重排→{len(reranked)} 条（向量搜索重排）")
+            # 如果 MQL（TIME过滤）返回了0条，说明时间严格过滤无结果，
+            # 保留0条而不是用向量搜索替换（单值TIME不应被绕过）
+            if state.get("mql_raw_count", 0) == 0:
+                steps_summary.append("5.混合重排→跳过（TIME严格过滤0条，不绕过）")
+            else:
+                reranked = await self.hybrid.search(state["query"], top_k=top_k)
+                state["result"] = reranked
+                steps_summary.append(f"5.混合重排→{len(reranked)} 条（向量搜索重排）")
         else:
             steps_summary.append("5.混合重排→跳过（GRAPH查询，保留图扩展结果）")
         return state, steps_summary
@@ -480,8 +492,14 @@ class NLSearchPipeline:
         if not results:
             return "暂时没有相关记忆。"
 
+        # 截断记忆，避免 token 过多导致回答过长
+        max_memories = 15
+        if len(results) > max_memories:
+            results = results[:max_memories]
+
         memories_text = self._build_memories_text(results)
         prompt = RESULT_GENERATION_PROMPT.format(
+            holder=self.holder,
             query=nl_query,
             count=len(results),
             memories_text=memories_text,
@@ -491,7 +509,7 @@ class NLSearchPipeline:
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
-                max_tokens=1024,
+                max_tokens=512,
             )
             return resp.choices[0].message.content or "（生成失败）"
         except Exception as e:
@@ -552,10 +570,13 @@ class NLSearchPipeline:
         """
         Stage 8: 重查MQL生成——根据反思提示生成改进版MQL。
         """
+        from datetime import datetime
+        now = datetime.now()
         prompt = REGENERATE_MQL_PROMPT.format(
             query=nl_query,
             prev_mql=prev_mql,
             reflection_hint=reflection_hint,
+            current_date=now.strftime("%Y-%m-%d %H:%M"),
         )
         try:
             resp = await self.llm.chat.completions.create(
@@ -570,6 +591,10 @@ class NLSearchPipeline:
             raw = resp.choices[0].message.content or ""
             mql_text = self._extract_tag(raw, "mql")
             conf_text = self._extract_tag(raw, "confidence")
+            # 防御性修复：如果 MQL 缺少 SELECT 前缀，自动补上
+            mql_text = mql_text.strip() if mql_text else ""
+            if mql_text and not mql_text.upper().startswith("SELECT"):
+                mql_text = "SELECT * FROM memories " + mql_text
             try:
                 confidence = float(conf_text.strip()) if conf_text else 0.0
             except ValueError:

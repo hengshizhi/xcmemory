@@ -42,10 +42,15 @@
 **语法：**
 ```sql
 SELECT <字段> FROM memories
-[WHERE <条件>]
+[WHERE <条件> | WHERE [<槽位>=<值>,...] SEARCH [TOPK <数量>]]
 [VERSION <版本号>]
+[GRAPH <操作>(<参数>)]
+[TIME year(...) AND month(...) AND day(...) AND clock(...)]
+[TOPK <数量>]
 [LIMIT <数量>]
 ```
+
+> **TIME / TOPK / LIMIT 按书写顺序执行**，例如 `TIME ... TOPK ... LIMIT ...` 表示先时间过滤、再匹配度排序、最后截断。
 
 **可用字段：** `*`、`id`、`content`、`time`、`subject`、`action`、`object`、`purpose`、`result`、`lifecycle`、`created_at`、`updated_at`
 
@@ -209,6 +214,9 @@ SELECT * FROM memories WHERE [purpose='锻炼身体'] SEARCH TOPK 20
 
 -- 结合 WHERE 条件过滤（先搜索后过滤）
 SELECT * FROM memories WHERE [subject='我', action='学习'] SEARCH TOPK 10
+
+-- 等价写法：条件 + SEARCH
+SELECT * FROM memories WHERE subject='我' SEARCH TOPK 10
 ```
 
 ### 3.2 全空间搜索（Fullspace Search）
@@ -237,6 +245,79 @@ SELECT * FROM memories WHERE [subject='我', action='学习'] SEARCH TOPK 10 FUL
 -- 全空间单槽搜索
 SELECT * FROM memories WHERE [purpose='成长'] SEARCH TOPK 5 FULLSPACE
 ```
+
+---
+
+## 四、时间过滤（TIME）
+
+### 4.1 语法
+
+`TIME` 关键字用于按记忆的创建时间（`created_at`）进行过滤，支持 **year/month/day/clock** 四个维度独立限定，用 `AND` 连接。
+
+```sql
+TIME [year(Y [TO Y | *]) [AND month(M [TO M | *]) [AND day(D [TO D | *]) [AND clock(HH:MM [TO HH:MM | *])]]]]
+```
+
+### 4.2 四个维度
+
+| 维度 | 格式 | 说明 | 默认值 |
+|------|------|------|--------|
+| `year` | `year(2024)` / `year(2024 TO 2025)` / `year(*)` | 年份范围 | `*`（不过滤） |
+| `month` | `month(03)` / `month(01 TO 06)` / `month(*)` | 月份范围（1-12） | `*` |
+| `day` | `day(15)` / `day(01 TO 15)` / `day(*)` | 日期范围（1-31） | `*` |
+| `clock` | `clock(09:00 TO 18:00)` / `clock(*)` | 日内时段（24h） | `*` |
+
+**规则：**
+- 各维度用 `AND` 连接，**全部指定维度必须同时满足**（AND 关系）
+- 不写的维度 = `*`（不过滤）
+- 不写 `TIME` = 不做时间过滤
+- `year(2024)` 等价于 `year(2024 TO 2024)`
+- `OR` 支持但当前只取第一个值
+
+### 4.3 示例
+
+```sql
+-- 查询 2024 年的记忆
+SELECT * FROM memories TIME year(2024)
+
+-- 查询 2024-2025 年的记忆
+SELECT * FROM memories TIME year(2024 TO 2025)
+
+-- 查询每年 1-3 月的记忆
+SELECT * FROM memories TIME year(*) AND month(01 TO 03)
+
+-- 查询 2024 年 1-3 月的记忆
+SELECT * FROM memories TIME year(2024) AND month(01 TO 03)
+
+-- 查询每天 9:00-18:00 的记忆
+SELECT * FROM memories TIME clock(09:00 TO 18:00)
+
+-- 查询 2024 年每月 21-30 号的 12:30-20:00 时段记忆
+SELECT * FROM memories TIME year(2024) AND day(21 TO 30) AND clock(12:30 TO 20:00)
+
+-- 结合 WHERE 条件
+SELECT * FROM memories WHERE subject='我' TIME year(2025) AND month(01 TO 03) LIMIT 10
+
+-- 结合向量搜索
+SELECT * FROM memories WHERE [subject='我'] SEARCH TOPK 20 TIME year(2024)
+```
+
+### 4.4 执行顺序
+
+`TIME`、`TOPK`、`LIMIT` 三个修饰符**按书写顺序从左到右执行**：
+
+```sql
+-- 先时间过滤，后匹配度排序
+SELECT * FROM memories TIME year(2024) TOPK 5
+
+-- 先匹配度排序，后时间过滤
+SELECT * FROM memories TOPK 5 TIME year(2024)
+
+-- 先时间过滤，再排序，最后截断
+SELECT * FROM memories TIME year(2024) TOPK 10 LIMIT 5
+```
+
+**完整执行顺序**：`WHERE → VERSION → GRAPH → ops(TIME/TOPK/LIMIT 按书写顺序)`
 
 ---
 
@@ -386,7 +467,19 @@ SELECT * FROM memories LIMIT 10
 SELECT * FROM memories WHERE subject='我' LIMIT 5
 ```
 
-### 7.2 字符串引号
+### 7.2 TOPK 子句
+
+过滤后按向量匹配度排序取前 k 条。与 `SEARCH TOPK` 不同，独立 `TOPK` 作用于已过滤结果。
+
+```sql
+-- 先时间过滤，再按匹配度取前 5
+SELECT * FROM memories WHERE subject='我' TIME year(2024) TOPK 5
+
+-- 先匹配度排序取前 10，再时间过滤
+SELECT * FROM memories WHERE subject='我' TOPK 10 TIME year(2024)
+```
+
+### 7.3 字符串引号
 
 - 单引号 `'value'`
 - 双引号 `"value"`

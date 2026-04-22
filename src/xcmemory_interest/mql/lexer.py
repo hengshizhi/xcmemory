@@ -53,6 +53,8 @@ class TokenType(Enum):
     TOPK = auto()
     VERSION = auto()
     LIMIT = auto()
+    COLON = auto()  # 时间值中的冒号 (:)
+    MINUS = auto()  # 日期中的减号 (-)
     # 系统管理
     CREATE = auto()
     DROP = auto()
@@ -94,6 +96,12 @@ class TokenType(Enum):
     FUNC = auto()
     DEFINE = auto()
     AS = auto()
+    # 时间过滤
+    TIME = auto()
+    YEAR = auto()
+    MONTH = auto()
+    DAY = auto()
+    CLOCK = auto()
 
 
 KEYWORDS = {
@@ -159,6 +167,12 @@ KEYWORDS = {
     "func": TokenType.FUNC,
     "define": TokenType.DEFINE,
     "as": TokenType.AS,
+    # 时间过滤
+    "time": TokenType.TIME,
+    "year": TokenType.YEAR,
+    "month": TokenType.MONTH,
+    "day": TokenType.DAY,
+    "clock": TokenType.CLOCK,
 }
 
 
@@ -183,7 +197,12 @@ class Lexer:
         (r"'>'[^']*'<'", None),
         (r'"[^"]*"', TokenType.STRING),
         (r"'[^']*'", TokenType.STRING),
+        # 日期时间（必须在 NUMBER 之前匹配）
+        (r"\d{4}-\d{2}-\d{2}( \d{2}:\d{2}(:\d{2})?)?", TokenType.STRING),
+        # 数字
         (r"-?\d+\.?\d*", TokenType.NUMBER),
+        (r":", TokenType.COLON),  # 时间冒号
+        (r"-", TokenType.MINUS),  # 日期/版本中的减号（单独出现时）
         (r"\[", TokenType.LBRACKET),
         (r"\]", TokenType.RBRACKET),
         (r"\(", TokenType.LPAREN),

@@ -31,6 +31,8 @@ INSERT INTO memories VALUES ('<time><subject><action><object><purpose><result>',
 
 **只能是单一时间词**，不能与 subject 合并。
 
+time 槽是记忆**内容**的时间标签（如"平时"、"深夜"），不是记忆创建时间的时间戳。如需按创建时间过滤，请使用 `TIME` 关键字（见下方）。
+
 | 时间词 | 语义 | lifecycle |
 |--------|------|-----------|
 | `平时` | 永久事实、习惯性状态、角色设定 | 999999 |
@@ -43,6 +45,40 @@ INSERT INTO memories VALUES ('<time><subject><action><object><purpose><result>',
 | `2026-04-17` | 具体日期 | 按重要性 |
 
 > **禁止**：`<近日>` `<最近>` `<前些时候>` 等未约定词汇。
+
+---
+
+### TIME 时间过滤关键字
+
+`TIME` 按**记忆创建时间戳**（`created_at`）过滤，与 time 槽位是两个概念：
+
+| 对比 | time 槽位 | TIME 过滤 |
+|------|-----------|-----------|
+| 含义 | 记忆内容的时间标签 | 记忆创建时间的时间戳 |
+| 语法 | `WHERE time='平时'` | `TIME year(2024) AND month(01 TO 03)` |
+| 场景 | "平时的习惯" → 搜 time 槽位 | "2024年的记忆" → TIME 过滤 |
+
+**TIME 语法**：
+```sql
+TIME [year(Y [TO Y | *]) [AND month(M [TO M | *]) [AND day(D [TO D | *]) [AND clock(HH:MM [TO HH:MM | *])]]]]
+```
+
+**示例**：
+```sql
+-- 2024年创建的记忆
+SELECT * FROM memories TIME year(2024)
+
+-- 2024年1-3月的记忆
+SELECT * FROM memories TIME year(2024) AND month(01 TO 03)
+
+-- 每天18:00-23:59的记忆
+SELECT * FROM memories TIME clock(18:00 TO 23:59)
+
+-- 2025年每月21-30号的下午记忆
+SELECT * FROM memories TIME year(2025) AND day(21 TO 30) AND clock(12:30 TO 20:00)
+```
+
+> **执行顺序**：TIME/TOPK/LIMIT 按书写顺序执行。
 
 ### ② subject 槽 —— 主体
 

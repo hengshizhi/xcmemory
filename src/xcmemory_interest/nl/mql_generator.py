@@ -20,12 +20,14 @@ from typing import Any
 NL_TO_MQL_PROMPT = """# Task
 将自然语言查询转换为 MQL 语句。
 
+★★★ 最重要规则：生成的 MQL 必须以 `SELECT * FROM memories` 开头，绝不省略！★★★
+
 # ★身份声明★
 当前记忆系统的持有者是「{holder}」。当用户说"我"、"我的"时，指的是持有者「{holder}」，应映射为 subject='{holder}'。
 你是在帮助「{holder}」回忆和检索她的记忆。
 
 # MQL 语法（基础）
-SELECT * FROM memories WHERE [slot=value,...] [SEARCH TOPK n] [LIMIT n]
+SELECT * FROM memories WHERE [slot=value,...] [SEARCH TOPK n] [TIME year(...) AND month(...) AND day(...) AND clock(...)] [TOPK n] [LIMIT n]
 六槽格式：<time><subject><action><object><purpose><result>，缺槽用 <无> 占位
 
 # 结果数量
@@ -44,17 +46,17 @@ SELECT * FROM memories WHERE [slot=value,...] [SEARCH TOPK n] [LIMIT n]
 ## ★何时不用 GRAPH（反面教材）★ —— 这是新手常犯的错误！
 以下情况**不要**用 GRAPH，只用普通 WHERE + LIMIT：
 1. **日常习惯/行为查询**："我平时会干嘛"、"我平时喜欢做什么"、"我有哪些日常习惯"
-   - 错误：WHERE subject='{holder}' GRAPH EXPAND(HOPS 2)（结果太杂，混入无关记忆）
-   - 正确：WHERE subject='{holder}' LIMIT 15（直接返回相关记忆）
+   - 错误：SELECT * FROM memories WHERE subject='{holder}' GRAPH EXPAND(HOPS 2)（结果太杂，混入无关记忆）
+   - 正确：SELECT * FROM memories WHERE subject='{holder}' LIMIT 15（直接返回相关记忆）
 2. **具体话题回忆**："我记得关于Python的事"、"我和哥哥做过什么"  
    - 错误：GRAPH EXPAND（会扩散到无关领域）
-   - 正确：WHERE subject='{holder}' AND object='Python' LIMIT 10
+   - 正确：SELECT * FROM memories WHERE subject='{holder}' AND object='Python' LIMIT 10
 3. **身份/定义类问句**："哥哥是谁"、"XX是做什么的"
    - 错误：GRAPH EXPAND（这是简单事实查询）
-   - 正确：WHERE '关键词' LIMIT 5
+   - 正确：SELECT * FROM memories WHERE '关键词' LIMIT 5
 4. **兴趣爱好查询**："我喜欢什么"、"我的兴趣爱好"
    - 错误：GRAPH EXPAND（太泛，结果太多太杂）
-   - 正确：WHERE [subject='{holder}', purpose='喜欢'] LIMIT 10 或 WHERE subject='{holder}' LIMIT 15
+   - 正确：SELECT * FROM memories WHERE [subject='{holder}', purpose='喜欢'] LIMIT 10 或 SELECT * FROM memories WHERE subject='{holder}' LIMIT 15
 
 ## GRAPH 操作类型
 - **GRAPH EXPAND(HOPS n)**：从种子记忆出发，扩展 n 跳邻居（推荐 HOPS 2）
@@ -63,10 +65,62 @@ SELECT * FROM memories WHERE [slot=value,...] [SEARCH TOPK n] [LIMIT n]
 - **GRAPH NEIGHBORS(MIN_SHARED m)**：获取直接相邻记忆
 
 ## GRAPH 使用示例（正面）
-- "我是一个怎么样的人" → WHERE subject='{holder}' GRAPH EXPAND(HOPS 2) LIMIT 20
-- "关于我的一切" → WHERE subject='{holder}' GRAPH CONNECTED(MIN_SHARED 2) LIMIT 30
-- "我的性格" → WHERE [subject='{holder}', purpose='性格'] GRAPH EXPAND(HOPS 2)
-- "我和家人的关系" → WHERE [subject='{holder}', object='家'] GRAPH EXPAND(HOPS 1)
+- "我是一个怎么样的人" → SELECT * FROM memories WHERE subject='{holder}' GRAPH EXPAND(HOPS 2) LIMIT 20
+- "关于我的一切" → SELECT * FROM memories WHERE subject='{holder}' GRAPH CONNECTED(MIN_SHARED 2) LIMIT 30
+- "我的性格" → SELECT * FROM memories WHERE [subject='{holder}', purpose='性格'] GRAPH EXPAND(HOPS 2)
+- "我和家人的关系" → SELECT * FROM memories WHERE [subject='{holder}', object='家'] GRAPH EXPAND(HOPS 1)
+
+# ★★★ 当前时间（重要！生成 TIME 时必须参考此信息）★★★
+当前时间：{current_date}
+- 当用户说"今天"→ TIME year({current_year}) AND month({current_month}) AND day({current_day})
+- 当用户说"今年"→ TIME year({current_year})
+- 当用户说"去年"→ TIME year({last_year})
+- 当用户说"本月"→ TIME year({current_year}) AND month({current_month})
+- 当用户说"上个月"→ TIME year({prev_year}) AND month({prev_month})
+所有相对时间词必须根据当前时间换算为绝对年份/月份！
+
+# ★★★ TIME 时间过滤语法（重要！）★★★
+当用户的查询涉及**时间范围**时，使用 TIME 关键字按记忆创建时间过滤。
+
+## TIME 语法
+```
+TIME [year(Y [TO Y | *]) [AND month(M [TO M | *]) [AND day(D [TO D | *]) [AND clock(HH:MM [TO HH:MM | *])]]]]
+```
+
+## 四个维度（独立限定，AND 关系）
+- `year(2024)` — 指定年份（等价于 year(2024 TO 2024)）
+- `year(2024 TO 2025)` — 年份范围
+- `year(*)` — 不限制年份（可省略整个 year 子句）
+- `month(01 TO 03)` — 月份范围（1-12）
+- `day(15)` — 指定日期
+- `clock(09:00 TO 18:00)` — 日内时段（24h制 HH:MM）
+- 不写的维度 = *（不过滤）
+
+## 何时用 TIME（判断规则）
+1. **明确的时间范围**："去年的记忆"、"2024年的事"、"今年1-3月" → TIME year(...)
+2. **时段查询**："白天的记忆"、"晚上的事" → TIME clock(...)
+3. **季节/月份**："春天的记忆"、"最近几个月" → TIME month(...)
+4. **具体日期**："本月21号" → TIME day(...)
+
+## 何时不用 TIME
+1. **time 槽位匹配**："平时的习惯"、"周末做的事" → 用 WHERE time='平时'（搜索 time 槽位值，不是 created_at 时间戳）
+2. **无时间意图**："关于Python的记忆" → 不需要 TIME
+
+## TIME 和 time 槽位的区别
+- **time 槽位**：记忆内容的时间标签（平时/深夜/早上/那天晚上等），用 WHERE time='平时' 匹配
+- **TIME 过滤**：记忆创建时间的时间戳过滤，用 TIME year(2024) 过滤 created_at
+
+## TIME 示例
+- "2024年的记忆" → SELECT * FROM memories WHERE subject='{holder}' TIME year(2024)
+- "去年1-3月的事" → SELECT * FROM memories WHERE subject='{holder}' TIME year(2025) AND month(01 TO 03)
+- "晚上的记忆" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(18:00 TO 23:59)
+- "白天发生过什么" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(06:00 TO 18:00)
+- "平时晚上的习惯" → SELECT * FROM memories WHERE time='平时' AND subject='{holder}'（用 time 槽位，不用 TIME）
+
+## 执行顺序
+TIME/TOPK/LIMIT 按书写顺序执行：
+- `TIME year(2024) TOPK 5` → 先时间过滤，再匹配度排序
+- `TOPK 10 TIME year(2024) LIMIT 5` → 先排序，再过滤，再截断
 
 # 槽位规则
 ① time：<平时>(永久) | <少年期/童年>(永久) | <那天晚上/深夜/早上>(一天) | <YYYY-MM-DD>
@@ -92,13 +146,18 @@ SELECT * FROM memories WHERE [slot=value,...] [SEARCH TOPK n] [LIMIT n]
 - "查找XX的记忆" 且 XX 是具体人名 → subject='XX'
 - "XX和YY的记忆" → subject='XX'
 
-# 示例
-- "关于Python的记忆" → WHERE subject='{holder}' AND object='Python'
-- "查询我关于Python的记忆" → WHERE subject='{holder}' AND object='Python'
-- "我是一个怎么样的人" → WHERE subject='{holder}' GRAPH EXPAND(HOPS 2) LIMIT 20
-- "我想学Python" → WHERE [subject='{holder}', action='学', object='Python']
-- "我平时会干嘛" → WHERE subject='{holder}' LIMIT 15（不用 GRAPH！）
-- "哥哥是谁" → WHERE '哥哥' LIMIT 5（不用 GRAPH！跨槽位搜索身份相关记忆）
+# 示例（★每条MQL必须以 SELECT * FROM memories 开头★）
+- "关于Python的记忆" → SELECT * FROM memories WHERE subject='{holder}' AND object='Python'
+- "查询我关于Python的记忆" → SELECT * FROM memories WHERE subject='{holder}' AND object='Python'
+- "我是一个怎么样的人" → SELECT * FROM memories WHERE subject='{holder}' GRAPH EXPAND(HOPS 2) LIMIT 20
+- "我想学Python" → SELECT * FROM memories WHERE [subject='{holder}', action='学', object='Python']
+- "我平时会干嘛" → SELECT * FROM memories WHERE subject='{holder}' LIMIT 15（不用 GRAPH！）
+- "哥哥是谁" → SELECT * FROM memories WHERE '哥哥' LIMIT 5（不用 GRAPH！跨槽位搜索身份相关记忆）
+- "2024年的记忆" → SELECT * FROM memories WHERE subject='{holder}' TIME year(2024)
+- "去年1-3月发生的事" → SELECT * FROM memories WHERE subject='{holder}' TIME year(2025) AND month(01 TO 03)
+- "晚上的记忆" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(18:00 TO 23:59)
+- "平时晚上的习惯" → SELECT * FROM memories WHERE time='平时' AND subject='{holder}'（time 槽位匹配，非 TIME 过滤）
+- "我白天做过什么" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(06:00 TO 18:00)
 
 # ★★★ 跨槽位多关键字搜索（重要！★★★）
 当用户询问**同时涉及多个主题或关键字**的记忆时，使用 bare string 跨槽位 AND 语法：
@@ -112,14 +171,14 @@ SELECT * FROM memories WHERE [slot=value,...] [SEARCH TOPK n] [LIMIT n]
    - "在关于 X 的记忆里，哪些也涉及 Y？"
 2. **关系组合**：不明确指定 subject/object，但知道几个相关关键字
    - "既提到哥哥又提到绯绯的记忆" → WHERE '哥哥' AND '绯绯'
-   - "关于慢慢来和哥哥的记忆" → WHERE '慢慢来' AND '哥哥'
+   - "关于慢慢来和哥哥的记忆" → SELECT * FROM memories WHERE '慢慢来' AND '哥哥'
 3. **主题探索**：宽泛地探索某类话题，不确定在哪
    - "有没有提到某本书或某个人的记忆？"
 
 ## 跨槽位语法示例
-- "既提到恋人又提到哥哥的记忆" → WHERE '恋人' AND '哥哥' LIMIT 20
-- "关于慢慢来、牵手、哥哥的记忆" → WHERE '慢慢来' AND '牵手' AND '哥哥' LIMIT 20
-- "星织相关的记忆中，哪些也提到了血缘" → WHERE subject='星织' AND '血缘' LIMIT 20
+- "既提到恋人又提到哥哥的记忆" → SELECT * FROM memories WHERE '恋人' AND '哥哥' LIMIT 20
+- "关于慢慢来、牵手、哥哥的记忆" → SELECT * FROM memories WHERE '慢慢来' AND '牵手' AND '哥哥' LIMIT 20
+- "星织相关的记忆中，哪些也提到了血缘" → SELECT * FROM memories WHERE subject='星织' AND '血缘' LIMIT 20
 
 # 输出格式（必须严格遵循）
 <analysis>意图+关键槽位+是否使用GRAPH及原因</analysis>
@@ -211,7 +270,20 @@ class MQLGenerator:
         else:
             topk_hint = f"（请在MQL的LIMIT子句中使用 {topk} 作为结果数量上限）"
 
-        prompt = NL_TO_MQL_PROMPT.format(query=nl_query, holder=self.system_holder, topk_hint=topk_hint)
+        from datetime import datetime
+        now = datetime.now()
+        prompt = NL_TO_MQL_PROMPT.format(
+            query=nl_query,
+            holder=self.system_holder,
+            topk_hint=topk_hint,
+            current_date=now.strftime("%Y-%m-%d %H:%M"),
+            current_year=str(now.year),
+            current_month=f"{now.month:02d}",
+            current_day=f"{now.day:02d}",
+            last_year=str(now.year - 1),
+            prev_year=str(now.year - 1) if now.month > 1 else str(now.year - 1),
+            prev_month=f"{now.month - 1:02d}" if now.month > 1 else "12",
+        )
         response = await self._call_llm(prompt)
 
         mql = self._extract_tag(response, "mql")
@@ -228,6 +300,11 @@ class MQLGenerator:
             confidence = float(nums[0]) if nums else 0.5
 
         operation = self._extract_operation(analysis, mql)
+
+        # 防御性修复：如果 LLM 生成的 MQL 缺少 SELECT 前缀，自动补上
+        mql = mql.strip()
+        if mql and not mql.upper().startswith("SELECT"):
+            mql = "SELECT * FROM memories " + mql
 
         return {
             "mql": mql,

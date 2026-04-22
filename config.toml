@@ -2,7 +2,7 @@
 # 由启动脚本自动生成，请勿手动删除 api_key（否则需重新生成）
 
 [server]
-database_root = './data/xcmemory'
+database_root = 'o:/project/xcmemory_interest/data/xcmemory'
 host = '0.0.0.0'
 port = 8080
 ws_port = 8081

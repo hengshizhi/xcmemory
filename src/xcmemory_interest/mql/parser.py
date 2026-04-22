@@ -30,7 +30,7 @@ MQL - Memory Query Language 语法分析器
 """
 
 import re
-from typing import List, Optional, Any, Dict, Union
+from typing import List, Optional, Any, Dict, Union, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -56,15 +56,47 @@ class GraphClause(ASTNode):
     min_shared: int = 1  # 最少共享槽位数
     target_id: Optional[str] = None  # 目标 memory_id（用于 PATH）
     value_slots: Optional[List[str]] = None  # 槽位列表（用于 VALUE_CHAIN）
+    limit: Optional[int] = None  # LIMIT 子句（跟在 GRAPH 之后）
+
+
+@dataclass
+class TimeFilter(ASTNode):
+    """TIME 组合时间过滤子句
+
+    语法：TIME [year(YEAR OP YEAR | *) [AND month(MONTH OP MONTH | *) [AND day(DAY OP DAY | *) [AND clock(CLOCK OP CLOCK | *)]]]]
+
+    示例：
+      TIME year(2024 TO 2025) AND month(01 TO 03)           -- 2024-2025年 且 1-3月
+      TIME year(*) AND month(09 TO 12)                        -- 仅限制月份
+      TIME year(2024) AND month(01 OR 09) AND day(15)       -- 2024年1月或9月15日
+      TIME year(*) AND clock(09:00 TO 18:00)                 -- 仅限制日内时段
+    """
+    # 各维度过滤条件，None 表示该维度不限制（相当于 *）
+    # 单值语法 year(2024) 会被解析为 year_start=2024, year_end=2024
+    year_start: Optional[int] = None
+    year_end: Optional[int] = None
+    month_start: Optional[int] = None
+    month_end: Optional[int] = None
+    day_start: Optional[int] = None
+    day_end: Optional[int] = None
+    clock_start: Optional[str] = None  # HH:MM
+    clock_end: Optional[str] = None
 
 
 @dataclass
 class SelectStatement(ASTNode):
-    """SELECT 语句"""
+    """SELECT 语句
+
+    ops 存储 TIME/TOPK/LIMIT 的有序操作列表，按书写顺序执行。
+    例如 "TIME ... TOPK ... LIMIT ..." -> ops=[("time", tf), ("topk", k), ("limit", n)]
+    """
     fields: List[str]  # 字段列表，* 表示所有
     conditions: List["Condition"] = field(default_factory=list)  # WHERE 条件
     version: Optional[int] = None  # VERSION 子句
-    limit: Optional[int] = None  # LIMIT 子句
+    ops: List[Tuple[str, Any]] = field(default_factory=list)  # 有序操作：("time", TimeFilter) | ("topk", int) | ("limit", int)
+    time_filter: Optional[TimeFilter] = None  # TIME FROM ... TO ... 子句（兼容，ops 里也有）
+    limit: Optional[int] = None  # LIMIT 子句（兼容，ops 里也有）
+    topk: Optional[int] = None  # TOPK 子句（兼容，ops 里也有）
     search_slots: Dict[str, str] = field(default_factory=dict)  # 向量搜索槽位
     search_topk: int = 5  # 搜索 top_k
     graph_clause: Optional[GraphClause] = None  # GRAPH 子句
@@ -252,6 +284,10 @@ class Parser:
         value = None
         if self._match(TokenType.STRING):
             value = self._advance().value
+            # 去掉首尾引号
+            if (value.startswith("'") and value.endswith("'")) or \
+               (value.startswith('"') and value.endswith('"')):
+                value = value[1:-1]
             # 处理查询句 <...>
             if value.startswith("<") and not value.endswith(">"):
                 # 收集剩余部分构建完整查询句
@@ -327,6 +363,10 @@ class Parser:
                     self._expect(TokenType.EQ)
                     if self._match(TokenType.STRING):
                         slot_value = self._advance().value
+                        # 去掉首尾引号
+                        if (slot_value.startswith("'") and slot_value.endswith("'")) or \
+                           (slot_value.startswith('"') and slot_value.endswith('"')):
+                            slot_value = slot_value[1:-1]
                     else:
                         raise ParseError("Expected string value", self.current)
                     search_slots[slot_name] = slot_value
@@ -360,6 +400,14 @@ class Parser:
             raise ParseError("Expected number after LIMIT", self.current)
         return None
 
+    def _parseTopK(self) -> Optional[int]:
+        """解析 TOPK n（过滤后按匹配度排序取前 n 条）"""
+        if self._matchAdvance(TokenType.TOPK):
+            if self._match(TokenType.NUMBER):
+                return int(self._advance().value)
+            raise ParseError("Expected number after TOPK", self.current)
+        return None
+
     def _parseVersion(self) -> Optional[int]:
         """解析 VERSION v1"""
         if self._matchAdvance(TokenType.VERSION):
@@ -373,6 +421,127 @@ class Parser:
                 raise ParseError("Expected version like v1", self.current)
             raise ParseError("Expected version number", self.current)
         return None
+
+    def _parseTimeFilter(self) -> Optional[TimeFilter]:
+        """解析 TIME 组合时间过滤子句
+
+        语法：TIME [year(YEAR [TO YEAR | OR YEAR | *]) [AND month(MONTH [TO MONTH | OR MONTH | *]) [...]]]
+        TIME 出现在 SELECT 语句中任意位置（WHERE/VERSION/TIME/LIMIT/TOPK/GRAPH 之后均可），
+        按从左到右顺序解析，遇到 LIMIT/TOPK/GRAPH/EOF/SELECT 等语句关键字终止。
+
+        示例：
+          TIME year(2024 TO 2025) AND month(01 TO 03)
+          TIME year(*) AND month(09 TO 12)
+          TIME year(2024) AND clock(09:00 TO 18:00)
+          TIME year(*) AND day(15) AND clock(*)
+        """
+        if not self._match(TokenType.TIME):
+            return None
+        self._advance()  # 消耗 TIME
+
+        # 如果 TIME 后直接是其他语句关键字，说明是 TIME * （不过滤）
+        if self.current.type in (TokenType.LIMIT, TokenType.TOPK, TokenType.GRAPH,
+                                  TokenType.SELECT, TokenType.EOF, TokenType.FROM):
+            return TimeFilter()  # 全空 = 不过滤
+
+        # 解析第一个维度: year/month/day/clock
+        f = TimeFilter()
+        dim_parsed = self._parseTimeDimension(f)
+        if dim_parsed:
+            # 继续解析 AND 连接的后续维度
+            while self._matchAdvance(TokenType.AND):
+                self._parseTimeDimension(f)
+
+        return f
+
+    def _parseTimeDimension(self, f: TimeFilter) -> bool:
+        """解析单个时间维度 year/month/day/clock(...)
+
+        Returns:
+            True if a dimension was parsed, False if not
+        """
+        dim = None
+        if self._matchAdvance(TokenType.YEAR):
+            dim = "year"
+        elif self._matchAdvance(TokenType.MONTH):
+            dim = "month"
+        elif self._matchAdvance(TokenType.DAY):
+            dim = "day"
+        elif self._matchAdvance(TokenType.CLOCK):
+            dim = "clock"
+        else:
+            return False
+
+        self._expect(TokenType.LPAREN)
+
+        values = []  # list of (start, end); None means *
+
+        while not self._match(TokenType.RPAREN):
+            # * 通配
+            if self._match(TokenType.MUL):
+                self._advance()
+                values = []  # 清空表示通配
+                break
+
+            if dim == "clock":
+                # clock: HH:MM，可能被拆成 NUMBER COLON NUMBER
+                if self._match(TokenType.NUMBER):
+                    h = self._advance().value
+                    m = "00"
+                    if self._match(TokenType.COLON):
+                        self._advance()
+                        m = self._advance().value
+                    start_str = f"{h}:{m}"
+                else:
+                    raise ParseError(f"Expected time in CLOCK, got {self.current.type}", self.current)
+                end_str = start_str
+                # 检查是否有 TO range
+                if self._match(TokenType.TO):
+                    self._advance()
+                    if self._match(TokenType.NUMBER):
+                        h2 = self._advance().value
+                        m2 = "00"
+                        if self._match(TokenType.COLON):
+                            self._advance()
+                            m2 = self._advance().value
+                        end_str = f"{h2}:{m2}"
+                    else:
+                        raise ParseError("Expected time after TO in CLOCK", self.current)
+                values.append((start_str, end_str))
+            else:
+                # year/month/day: 数字 [TO 数字]
+                if not self._match(TokenType.NUMBER):
+                    raise ParseError(f"Expected number for {dim}, got {self.current.type}", self.current)
+                start_val = int(self._advance().value)
+                end_val = start_val
+                if self._match(TokenType.TO):
+                    self._advance()
+                    if not self._match(TokenType.NUMBER):
+                        raise ParseError(f"Expected end number after TO in {dim}", self.current)
+                    end_val = int(self._advance().value)
+                values.append((start_val, end_val))
+
+            # OR 分隔多个值/范围
+            if not self._matchAdvance(TokenType.OR):
+                break
+
+        self._expect(TokenType.RPAREN)
+
+        # 写入对应字段（多值只取第一个）
+        if not values:
+            pass  # * = 不限制
+        else:
+            v = values[0]
+            if dim == "year":
+                f.year_start, f.year_end = v[0], v[1]
+            elif dim == "month":
+                f.month_start, f.month_end = v[0], v[1]
+            elif dim == "day":
+                f.day_start, f.day_end = v[0], v[1]
+            elif dim == "clock":
+                f.clock_start, f.clock_end = v[0], v[1]
+
+        return True
 
     def _parseGraphClause(self) -> GraphClause:
         """解析 GRAPH 操作子句
@@ -552,17 +721,67 @@ class Parser:
                 search_slots, search_topk = self._parseSearchClause()
             else:
                 conditions = self._parseConditions()
+                # 条件解析后可能还跟着 SEARCH（WHERE subject='我' SEARCH ...）
+                if self._match(TokenType.SEARCH):
+                    self._advance()
+                    # 把已有的等值条件转换为搜索槽位
+                    for cond in conditions:
+                        if cond.operator in ("=", "==") and cond.field in self.SLOT_FIELDS:
+                            search_slots[cond.field] = str(cond.value)
+                    # 条件清空（已转为搜索槽位）
+                    if search_slots:
+                        conditions = []
+                    # 解析 SEARCH 后的 TOPK
+                    if self._matchAdvance(TokenType.TOPK):
+                        if self._match(TokenType.NUMBER):
+                            search_topk = int(self._advance().value)
 
         # VERSION
         version = self._parseVersion()
 
-        # LIMIT
-        limit = self._parseLimit()
-
-        # GRAPH 子句
+        # GRAPH 子句（固定位置，在 TIME/TOPK/LIMIT 之前）
         graph_clause = None
+        graph_limit_val = None
         if self._match(TokenType.GRAPH):
             graph_clause = self._parseGraphClause()
+            graph_limit_val = graph_clause.limit
+
+        # 按书写顺序收集 TIME / TOPK / LIMIT
+        ops: List[Tuple[str, Any]] = []
+        time_filter = None
+        limit = graph_limit_val  # GRAPH 自己的 LIMIT
+        topk = None
+
+        # 把 GRAPH 的 LIMIT 也放入 ops（顺序在所有 TIME/TOPK/LIMIT 之前）
+        if graph_limit_val is not None:
+            ops.append(("limit", graph_limit_val))
+
+        # 循环解析 TIME / TOPK / LIMIT
+        while True:
+            consumed = False
+            # TIME
+            if self._match(TokenType.TIME):
+                tf = self._parseTimeFilter()
+                if tf is not None:
+                    time_filter = tf
+                    ops.append(("time", tf))
+                    consumed = True
+            # TOPK
+            elif self._match(TokenType.TOPK):
+                k = self._parseTopK()
+                if k is not None:
+                    topk = k
+                    ops.append(("topk", k))
+                    consumed = True
+            # LIMIT
+            elif self._match(TokenType.LIMIT):
+                n = self._parseLimit()
+                if n is not None:
+                    limit = n
+                    ops.append(("limit", n))
+                    consumed = True
+            if not consumed:
+                break
 
         # WRAP 包装语法
         wrapped_sql = None
@@ -597,7 +816,10 @@ class Parser:
             fields=fields,
             conditions=conditions,
             version=version,
+            ops=ops,
+            time_filter=time_filter,
             limit=limit,
+            topk=topk,
             search_slots=search_slots,
             search_topk=search_topk,
             graph_clause=graph_clause,

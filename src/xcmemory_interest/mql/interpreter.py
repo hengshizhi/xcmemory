@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from .parser import (
     ASTNode, SelectStatement, InsertStatement,
     UpdateStatement, DeleteStatement, Condition,
-    DefineStatement, GraphClause
+    DefineStatement, GraphClause, TimeFilter
 )
 from .errors import ExecutionError
 
@@ -270,17 +270,22 @@ class Interpreter:
 
             results.append(mem_dict)
 
-        # LIMIT
-        if stmt.limit:
-            results = results[:stmt.limit]
-
-        # 执行 GRAPH 子句
+        # 执行 GRAPH 子句（固定位置，在 TIME/TOPK/LIMIT 之前）
         if stmt.graph_clause and results:
             results = self._execute_graph_clause(
                 stmt.graph_clause,
                 [r.get("id") for r in results if r.get("id")],
                 mem,
             )
+
+        # 按 ops 顺序执行 TIME / TOPK / LIMIT
+        for op_type, op_value in stmt.ops:
+            if op_type == "time" and results:
+                results = self._execute_time_filter(op_value, results)
+            elif op_type == "topk" and results:
+                results = self._execute_topk(op_value, results, mem)
+            elif op_type == "limit" and results:
+                results = results[:op_value]
 
         return QueryResult(
             type="select",
@@ -457,6 +462,151 @@ class Interpreter:
                 results.append(mem_dict)
 
         return results
+
+    def _execute_time_filter(
+        self, clause: TimeFilter, results: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """执行 TIME 组合时间过滤
+
+        各维度(year/month/day/clock)独立过滤，AND 关系（所有指定维度都必须满足）。
+        """
+        from datetime import datetime
+
+        def get_mem_dt(mem_dict: Dict[str, Any]) -> datetime:
+            """从记忆字典获取 datetime（优先 created_at）"""
+            ts = mem_dict.get("created_at") or mem_dict.get("updated_at") or ""
+            ts = str(ts)
+            if not ts:
+                return datetime.min
+            for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]:
+                try:
+                    return datetime.strptime(ts[:19], fmt)
+                except ValueError:
+                    pass
+            try:
+                return datetime.fromisoformat(ts.replace("Z", "+00:00").split("+")[0])
+            except Exception:
+                return datetime.min
+
+        def parse_time(val: str):
+            """解析 HH:MM 或 HH:MM:SS 为 (hour, minute)"""
+            parts = val.split(":")
+            h = int(parts[0])
+            m = int(parts[1]) if len(parts) > 1 else 0
+            return h * 60 + m  # 转为分钟数便于比较
+
+        def time_filter(mem_dict: Dict[str, Any]) -> bool:
+            dt = get_mem_dt(mem_dict)
+
+            # year
+            if clause.year_start is not None or clause.year_end is not None:
+                y = dt.year
+                ys = clause.year_start
+                ye = clause.year_end
+                if ye is not None and y > ye:
+                    return False
+                if ys is not None and y < ys:
+                    return False
+
+            # month
+            if clause.month_start is not None or clause.month_end is not None:
+                m = dt.month
+                ms = clause.month_start
+                me = clause.month_end
+                if me is not None and m > me:
+                    return False
+                if ms is not None and m < ms:
+                    return False
+
+            # day
+            if clause.day_start is not None or clause.day_end is not None:
+                d = dt.day
+                ds = clause.day_start
+                de = clause.day_end
+                if de is not None and d > de:
+                    return False
+                if ds is not None and d < ds:
+                    return False
+
+            # clock (日内分钟)
+            if clause.clock_start is not None or clause.clock_end is not None:
+                total_min = dt.hour * 60 + dt.minute
+                cs = parse_time(clause.clock_start) if clause.clock_start else None
+                ce = parse_time(clause.clock_end) if clause.clock_end else None
+                if ce is not None and total_min > ce:
+                    return False
+                if cs is not None and total_min < cs:
+                    return False
+
+            return True
+
+        return [r for r in results if time_filter(r)]
+
+    def _execute_topk(
+        self,
+        k: int,
+        results: List[Dict[str, Any]],
+        mem,
+    ) -> List[Dict[str, Any]]:
+        """执行 TOPK：对已过滤的记忆按向量相似度重新排序，取前 k 条
+
+        使用向量搜索获取匹配度分数，然后按分数降序排列结果。
+        """
+        if not results:
+            return results
+
+        # 构造查询槽位：从已有结果的 query_sentence 提取 subject/action 等共性
+        # 或者直接用当前结果集的槽位做向量搜索
+        # 最简单策略：把已有记忆 ID 对应的搜索结果按 score 排序
+        memory_ids = [r.get("id") for r in results if r.get("id")]
+        if not memory_ids:
+            return results[:k]
+
+        # 用第一个记忆的 query_sentence 槽位作为查询向量
+        first_mem = mem.get_memory(memory_ids[0])
+        if not first_mem:
+            return results[:k]
+
+        # 解析槽位，构建查询
+        slots = self._parse_query_sentence(first_mem.query_sentence)
+        if not slots:
+            return results[:k]
+
+        # 对每个槽位做向量搜索，取分数
+        # 注意：search_subspace 只返回 top_k 结果，我们需要所有结果的分数
+        # 用 search_fullspace 可以对所有记忆排序
+        try:
+            search_results = mem.search_fullspace(
+                query_slots=slots,
+                top_k=min(k * 3, len(memory_ids) * 2),  # 多取一些再过滤
+                embedding_mode="INTEREST",
+            )
+        except Exception:
+            return results[:k]
+
+        # 建立 memory_id -> score 的映射
+        score_map = {}
+        for sr in search_results:
+            score_map[sr.memory_id] = sr.score
+
+        # 给结果附加分数，没有分数的排在最后
+        scored_results = []
+        for r in results:
+            mid = r.get("id")
+            score = score_map.get(mid, 0.0)
+            r_copy = dict(r)
+            r_copy["_topk_score"] = score
+            scored_results.append(r_copy)
+
+        # 按分数降序，取前 k
+        scored_results.sort(key=lambda x: x["_topk_score"], reverse=True)
+        topk_results = scored_results[:k]
+
+        # 去掉辅助字段
+        for r in topk_results:
+            r.pop("_topk_score", None)
+
+        return topk_results
 
     # =========================================================================
     # 函数包装执行
