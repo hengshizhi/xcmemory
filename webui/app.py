@@ -307,6 +307,71 @@ def do_mql(mql_script):
 # 自然语言查询
 # ============================================================================
 
+def _render_flowchart(trace: list[dict]) -> str:
+    if not trace:
+        return "（无跟踪数据）"
+    lines = []
+    lines.append("┌──────────────────────────────────────────────────────────────┐")
+    lines.append("│                      🔬 Pipeline Flow                      │")
+    lines.append("├──────────────────────────────────────────────────────────────┤")
+
+    groups = []
+    current_step = None
+    for t in trace:
+        s = t.get("step", "")
+        if s != current_step:
+            if groups and groups[-1]["calls"]:
+                pass
+            groups.append({"step": s, "calls": []})
+            current_step = s
+        groups[-1]["calls"].append(t)
+
+    total_tok = 0
+    total_ms = 0
+    step_index = 0
+    for g in groups:
+        if not g["step"]:
+            continue
+        step_index += 1
+        calls = g["calls"]
+        n_calls = len(calls)
+        p_tok = sum(c.get("prompt_tokens", 0) for c in calls)
+        c_tok = sum(c.get("completion_tokens", 0) for c in calls)
+        t_tok = p_tok + c_tok
+        total_tok += t_tok
+        d_ms = sum(c.get("duration_ms", 0) for c in calls)
+        total_ms += d_ms
+
+        lines.append(f"│                                                              │")
+        label = g["step"]
+        tok_str = f"prompt {p_tok} + 完成 {c_tok} = {t_tok} tok" if t_tok else "0 tok"
+        time_str = f"  {d_ms:.0f}ms" if d_ms >= 1 else ""
+        lines.append(f"│  {label}")
+        if n_calls > 0:
+            lines.append(f"│    LLM ×{n_calls}  ·  {tok_str}{time_str}")
+
+        # Show output previews
+        for ci, c in enumerate(calls):
+            out = c.get("output_preview", "").strip()
+            if out:
+                trunc = out[:100]
+                label2 = f"  └─" if n_calls == 1 else f"  ├─调用{ci+1}:"
+                lines.append(f"│{label2} {trunc}")
+
+        # Track non-LLM step notes from steps_summary
+        if "写入" in label or "执行" in label or "重排" in label or "混合" in label:
+            pass  # steps_summary covers these
+
+    lines.append("│                                                              │")
+    lines.append("├──────────────────────────────────────────────────────────────┤")
+
+    n_llm = len(trace)
+    avg_ms = total_ms / n_llm if n_llm else 0
+    lines.append(f"│  📊 总计: {n_llm} 次 LLM 调用  ·  {total_tok} tokens  ·  {total_ms:.0f}ms  ·  平均 {avg_ms:.0f}ms/调用")
+    lines.append("└──────────────────────────────────────────────────────────────┘")
+    return "\n".join(lines)
+
+
 def _lifecycle_human(seconds: int) -> str:
     if seconds >= 999999:
         return "永久"
@@ -377,7 +442,12 @@ def do_nl_query(nl_query: str, top_k: int):
     try:
         result = asyncio.run(_run())
         lines = [f"🤖 自然语言查询: {nl_query}"]
-        lines.append("─" * 60)
+        lines.append("─" * 72)
+
+        # ── 流程图 ──
+        trace = result.get("trace", [])
+        if trace:
+            lines.append(_render_flowchart(trace))
 
         # ── 意图识别概览 ──
         intent = result.get("intent", {})
@@ -394,28 +464,20 @@ def do_nl_query(nl_query: str, top_k: int):
             if n_queries > 0:
                 parts.append(f"🔍 {n_queries}条查询")
             lifecycle = intent.get("lifecycle", "short")
-            lines.append(f"   {', '.join(parts)}  |  档位: {lifecycle} ({_lifecycle_human(intent.get('reference_duration', 86400))})")
+            lines.append(f"   意图: {', '.join(parts)}  |  档位: {lifecycle} ({_lifecycle_human(intent.get('reference_duration', 86400))})")
 
         llm_calls = result.get("llm_calls", 0)
-        lines.append(f"🔄 LLM 调用: {llm_calls} 次")
+        lines.append(f"🔄 本次 LLM 调用: {llm_calls} 次")
         lines.append("")
-
-        # ── 步骤摘要 ──
-        steps = result.get("steps_summary", [])
-        if steps:
-            lines.append("📋 流程步骤:")
-            for s in steps:
-                lines.append(f"   {s}")
-            lines.append("")
 
         # ── 意图详情 ──
         if intent.get("writes"):
-            lines.append("📝 识别到的写入句:")
+            lines.append("📝 写入句:")
             for w in intent["writes"]:
                 lines.append(f"   → {w}")
             lines.append("")
         if intent.get("queries"):
-            lines.append("🔍 识别到的查询句:")
+            lines.append("🔍 查询句:")
             for q in intent["queries"]:
                 lines.append(f"   → {q}")
             lines.append("")
@@ -434,8 +496,9 @@ def do_nl_query(nl_query: str, top_k: int):
                         lines.append(f"   记忆ID: {', '.join(wids[:3])}")
                 lines.append("")
             else:
-                lines.append("⚠️ 写入执行结果为空（可能 LLM 生成 MQL 失败）")
-                lines.append("")
+                if n_writes > 0:
+                    lines.append("⚠️ 写入执行结果为空（可能 LLM 生成 MQL 失败）")
+                    lines.append("")
 
         # ── 每个查询的结果 ──
         query_results_list = result.get("queries", [])
@@ -447,7 +510,7 @@ def do_nl_query(nl_query: str, top_k: int):
                 q_items = qr.get("results", [])
 
                 label = f"查询 {qi+1}" if len(query_results_list) > 1 else "查询"
-                lines.append(f"── {label}: {q_query} ──")
+                lines.append(f"══ {label}: {q_query} ══")
 
                 if q_mql:
                     lines.append(f"   MQL: {q_mql}")
@@ -474,8 +537,9 @@ def do_nl_query(nl_query: str, top_k: int):
 
         # ── 生成的所有 MQL ──
         if result.get("mql"):
-            lines.append("─" * 60)
-            lines.append(f"📝 完整 MQL:\n   {result['mql']}")
+            lines.append("─" * 72)
+            lines.append(f"📝 完整 MQL:")
+            lines.append(f"   {result['mql']}")
             lines.append("")
 
         # ── 全局统计 ──

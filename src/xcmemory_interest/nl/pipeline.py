@@ -13,6 +13,7 @@ NL Pipeline 编排引擎 (NLPipeline)
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from .intent_classifier import IntentClassifier
@@ -173,6 +174,32 @@ class NLPipeline:
             llm_client, model=model, debug=debug, system_holder=self.holder
         )
         self.hybrid = HybridSearch(memory_system)
+        self._trace: list[dict] = []
+        self._current_trace_step = ""
+
+    def _make_traced_create(self):
+        original = self.llm.chat.completions.create
+
+        async def traced(model, messages, **kwargs):
+            start = time.time()
+            response = await original(model=model, messages=messages, **kwargs)
+            elapsed_ms = (time.time() - start) * 1000
+            usage = getattr(response, "usage", None)
+            entry = {
+                "step": self._current_trace_step,
+                "model": model,
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0) if usage else 0,
+                "completion_tokens": getattr(usage, "completion_tokens", 0) if usage else 0,
+                "total_tokens": getattr(usage, "total_tokens", 0) if usage else 0,
+                "output_preview": "",
+                "duration_ms": round(elapsed_ms, 1),
+            }
+            if response.choices and response.choices[0].message.content:
+                entry["output_preview"] = response.choices[0].message.content.strip()[:120]
+            self._trace.append(entry)
+            return response
+
+        return traced
 
     async def run(self, nl_query: str, history: list[dict], top_k: int = 10) -> dict:
         """
@@ -196,10 +223,14 @@ class NLPipeline:
         """
         all_steps_summary: list[str] = []
         llm_calls = 0
+        self._trace = []
+        original_create = self.llm.chat.completions.create
+        self.llm.chat.completions.create = self._make_traced_create()
 
         # =====================================================================
         # Stage 1: 意图识别
         # =====================================================================
+        self._current_trace_step = "① 意图识别"
         intent_result = await self.intent_classifier.classify(nl_query, history)
         llm_calls += 1
         writes = intent_result["writes"]
@@ -221,6 +252,7 @@ class NLPipeline:
         write_results = []
         write_mql_list = []
         if writes:
+            self._current_trace_step = "②a 写入MQL生成"
             write_mql_result = await self.write_gen.generate(
                 writes, reference_duration=reference_duration
             )
@@ -309,6 +341,8 @@ class NLPipeline:
             "queries": len(queries),
         })
 
+        self.llm.chat.completions.create = original_create
+
         return {
             "type": type_,
             "response": final_response,
@@ -328,6 +362,7 @@ class NLPipeline:
                 "total_calls": _llm_stats["total_calls"],
                 "total_queries": _llm_stats["query_count"],
             },
+            "trace": self._trace,
         }
 
     # =========================================================================
@@ -362,11 +397,12 @@ class NLPipeline:
         while retry_count <= self.max_retries:
             retry_count += 1
 
-            # MQL 生成（首次 or 重查）
             if retry_count == 1:
+                self._current_trace_step = f"{label}④ MQL生成"
                 mql_plan = await self.mql_gen.generate_with_fallback(query_stmt, topk=top_k)
                 llm_calls += 1
             else:
+                self._current_trace_step = f"{label}⑧ 重查MQL生成"
                 mql_plan = await self._regenerate_mql(
                     query_stmt, state["mql"], reflection_hint
                 )
@@ -386,11 +422,11 @@ class NLPipeline:
             # 混合重排
             state, _ = await self._hybrid_rerank(state, top_k)
 
-            # 生成 NL
+            self._current_trace_step = f"{label}⑤ NL生成"
             nl_response = await self._generate_nl_response(query_stmt, state["result"])
             llm_calls += 1
 
-            # 反思审查
+            self._current_trace_step = f"{label}⑥ 反思审查"
             review = await self._reflect_review(query_stmt, nl_response, state["result"])
             llm_calls += 1
 
