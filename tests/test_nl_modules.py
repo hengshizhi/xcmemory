@@ -306,6 +306,221 @@ SELECT * FROM memories WHERE object='Python' SEARCH TOPK 5
 
 
 # ============================================================================
+# Test Intent Classifier (意图识别)
+# ============================================================================
+
+class TestIntentClassifier:
+    """测试意图识别器"""
+
+    @pytest.mark.asyncio
+    async def test_classify_writes_and_queries(self):
+        """测试同时有写入和查询的输入"""
+        from xcmemory_interest.nl.intent_classifier import IntentClassifier
+
+        mock_response = """<writes>星织打算去沃尔玛购物</writes>
+<queries>星织平时需要买什么？</queries>
+<lifecycle>medium</lifecycle>"""
+
+        mock_llm = MockLLMClient({"今天": mock_response})
+        classifier = IntentClassifier(mock_llm, system_holder="星织")
+        result = await classifier.classify("我今天打算去沃尔玛购物。可是需要买什么？")
+
+        assert result["writes"] == ["星织打算去沃尔玛购物"]
+        assert result["queries"] == ["星织平时需要买什么？"]
+        assert result["lifecycle"] == "medium"
+        assert result["reference_duration"] == 7 * 86400
+
+    @pytest.mark.asyncio
+    async def test_classify_write_only(self):
+        """测试纯写入输入"""
+        from xcmemory_interest.nl.intent_classifier import IntentClassifier
+
+        mock_response = """<writes>星织的密码是abc123</writes>
+<queries></queries>
+<lifecycle>permanent</lifecycle>"""
+
+        mock_llm = MockLLMClient({"记住": mock_response})
+        classifier = IntentClassifier(mock_llm, system_holder="星织")
+        result = await classifier.classify("记住我的密码是abc123")
+
+        assert result["writes"] == ["星织的密码是abc123"]
+        assert result["queries"] == []
+        assert result["lifecycle"] == "permanent"
+
+    @pytest.mark.asyncio
+    async def test_classify_query_only(self):
+        """测试纯查询输入"""
+        from xcmemory_interest.nl.intent_classifier import IntentClassifier
+
+        mock_response = """<writes></writes>
+<queries>星织关于Python的记忆</queries>
+<lifecycle>short</lifecycle>"""
+
+        mock_llm = MockLLMClient({"Python": mock_response})
+        classifier = IntentClassifier(mock_llm, system_holder="星织")
+        result = await classifier.classify("关于Python的记忆")
+
+        assert result["writes"] == []
+        assert result["queries"] == ["星织关于Python的记忆"]
+        assert result["lifecycle"] == "short"
+
+    @pytest.mark.asyncio
+    async def test_classify_with_history(self):
+        """测试带对话历史的意图识别（代词消解）"""
+        from xcmemory_interest.nl.intent_classifier import IntentClassifier
+
+        mock_response = """<writes></writes>
+<queries>Python的特点是什么？</queries>
+<lifecycle>short</lifecycle>"""
+
+        mock_llm = MockLLMClient({"Python": mock_response})
+        classifier = IntentClassifier(mock_llm, system_holder="星织")
+
+        history = [
+            {"role": "user", "content": "我想学Python"},
+            {"role": "assistant", "content": "Python是一門很棒的編程語言"},
+        ]
+        result = await classifier.classify("它有什么特点？", history)
+
+        assert len(mock_llm.call_history) == 1
+        # 验证历史上下文被传入 LLM
+        call_content = mock_llm.call_history[0]["content"]
+        assert "对话背景" in call_content or "历史" in call_content
+
+    @pytest.mark.asyncio
+    async def test_classify_llm_error_fallback(self):
+        """测试 LLM 异常时的降级行为"""
+        from xcmemory_interest.nl.intent_classifier import IntentClassifier
+
+        mock_llm = MockLLMClient()
+        # 让 LLM 报错
+        mock_llm.chat.completions.create = AsyncMock(side_effect=Exception("API error"))
+
+        classifier = IntentClassifier(mock_llm, debug=True)
+        result = await classifier.classify("Python的特点是什么？")
+
+        # 降级为纯查询
+        assert result["writes"] == []
+        assert result["queries"] == ["Python的特点是什么？"]
+        assert result["lifecycle"] == "short"
+        assert result["reference_duration"] == 86400
+
+    def test_lifecycle_tiers(self):
+        """测试生命周期档位映射"""
+        from xcmemory_interest.nl.intent_classifier import LIFECYCLE_TIERS
+
+        assert LIFECYCLE_TIERS["permanent"] == 999999
+        assert LIFECYCLE_TIERS["long"] == 30 * 86400
+        assert LIFECYCLE_TIERS["medium"] == 7 * 86400
+        assert LIFECYCLE_TIERS["short"] == 86400
+
+    def test_extract_tag(self):
+        """测试标签提取"""
+        from xcmemory_interest.nl.intent_classifier import IntentClassifier
+
+        text = """<writes>写入句1|写入句2</writes>
+<queries>查询句</queries>
+<lifecycle>medium</lifecycle>"""
+
+        assert IntentClassifier._extract_tag(text, "writes") == "写入句1|写入句2"
+        assert IntentClassifier._extract_tag(text, "queries") == "查询句"
+        assert IntentClassifier._extract_tag(text, "lifecycle") == "medium"
+        assert IntentClassifier._extract_tag(text, "nonexistent") == ""
+
+    def test_extract_tag_empty(self):
+        """测试空标签提取"""
+        from xcmemory_interest.nl.intent_classifier import IntentClassifier
+
+        text = "<writes></writes><queries></queries>"
+        assert IntentClassifier._extract_tag(text, "writes") == ""
+        assert IntentClassifier._extract_tag(text, "queries") == ""
+
+
+# ============================================================================
+# Test WriteMQLGenerator (写入MQL生成)
+# ============================================================================
+
+class TestWriteMQLGenerator:
+    """测试 NL→INSERT MQL 生成器"""
+
+    @pytest.mark.asyncio
+    async def test_generate_basic(self):
+        """测试基本写入生成"""
+        from xcmemory_interest.nl.write_mql_generator import WriteMQLGenerator
+
+        mock_response = """<mql>INSERT INTO memories VALUES ('<无><星织><打算><沃尔玛购物><无><无>', '星织打算去沃尔玛购物', 604800)</mql>"""
+
+        mock_llm = MockLLMClient({"沃尔玛": mock_response})
+        gen = WriteMQLGenerator(mock_llm, system_holder="星织")
+
+        result = await gen.generate(["星织打算去沃尔玛购物"], reference_duration=604800)
+
+        assert "INSERT" in result["mql_script"]
+        assert result["insert_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_generate_multiple(self):
+        """测试多条写入生成"""
+        from xcmemory_interest.nl.write_mql_generator import WriteMQLGenerator
+
+        mock_response = """<mql>INSERT INTO memories VALUES ('<无><星织><喜欢><火锅><无><无>', '星织喜欢吃火锅', 2592000);INSERT INTO memories VALUES ('<明天><星织><做><开会><无><无>', '星织明天要开会', 604800)</mql>"""
+
+        mock_llm = MockLLMClient({"星织": mock_response})
+        gen = WriteMQLGenerator(mock_llm, system_holder="星织")
+
+        result = await gen.generate(
+            ["星织喜欢吃火锅", "星织明天要开会"],
+            reference_duration=604800,
+        )
+
+        assert result["insert_count"] == 2
+        assert ";" in result["mql_script"]
+
+    @pytest.mark.asyncio
+    async def test_generate_empty(self):
+        """测试空陈述句列表"""
+        from xcmemory_interest.nl.write_mql_generator import WriteMQLGenerator
+
+        mock_llm = MockLLMClient()
+        gen = WriteMQLGenerator(mock_llm)
+        result = await gen.generate([])
+
+        assert result["mql_script"] == ""
+        assert result["insert_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_generate_llm_error_fallback(self):
+        """测试 LLM 异常时的降级行为"""
+        from xcmemory_interest.nl.write_mql_generator import WriteMQLGenerator
+
+        mock_llm = MockLLMClient()
+        mock_llm.chat.completions.create = AsyncMock(side_effect=Exception("API error"))
+
+        gen = WriteMQLGenerator(mock_llm, debug=True)
+        result = await gen.generate(["星织打算去沃尔玛购物"])
+
+        assert result["mql_script"] == ""
+        assert result["insert_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_generate_defensive_insert_fix(self):
+        """测试 INSERT 前缀防御性修复"""
+        from xcmemory_interest.nl.write_mql_generator import WriteMQLGenerator
+
+        # LLM 返回缺少 INSERT 前缀的 MQL
+        mock_response = """<mql>INTO memories VALUES ('<无><星织><喜欢><火锅><无><无>', '内容', 2592000)</mql>"""
+
+        mock_llm = MockLLMClient({"火锅": mock_response})
+        gen = WriteMQLGenerator(mock_llm, system_holder="星织")
+
+        result = await gen.generate(["星织喜欢吃火锅"], reference_duration=2592000)
+
+        # 应该自动补上 INSERT
+        assert result["mql_script"].upper().startswith("INSERT")
+        assert result["insert_count"] == 1
+
+
+# ============================================================================
 # Test Slot Extractor (6槽提取)
 # ============================================================================
 
@@ -472,21 +687,19 @@ class TestReinforcement:
 # ============================================================================
 
 class TestNLSearchPipeline:
-    """测试 NL 检索流水线"""
+    """测试 NL Pipeline"""
 
     @pytest.mark.asyncio
     async def test_pipeline_components_exist(self):
         """测试流水线组件存在"""
-        from xcmemory_interest.nl.pipeline import NLSearchPipeline
+        from xcmemory_interest.nl.pipeline import NLPipeline, NLSearchPipeline
 
-        # 验证流水线步骤定义
-        assert hasattr(NLSearchPipeline, 'STEPS')
-        assert len(NLSearchPipeline.STEPS) > 0
-
-        # 验证步骤名称
-        step_names = [s[0] for s in NLSearchPipeline.STEPS]
-        assert "pre_decision" in step_names
-        assert "nl_to_mql" in step_names
+        # 验证核心组件存在
+        assert hasattr(NLSearchPipeline, 'intent_classifier')
+        assert hasattr(NLSearchPipeline, 'write_gen')
+        assert hasattr(NLSearchPipeline, 'mql_gen')
+        assert hasattr(NLSearchPipeline, 'hybrid')
+        assert hasattr(NLSearchPipeline, 'run')
 
 
 # ============================================================================

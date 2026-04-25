@@ -1,16 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-NL Pipeline 编排引擎 (NLSearchPipeline)
+NL Pipeline 编排引擎 (NLPipeline)
 
-简化版流程：
-1. 查询重写 - 解析代词和隐含引用
-2. NL→MQL生成 - 将 NL 转为 MQL 语句
-3. 执行MQL - 调用 MemorySystem.execute()
-4. 混合重排 - 如果不够，扩展检索并重排
-5. 生成NL回答 - 将记忆转为自然语言
-6. 反思审查 - 判断 NL 结果是否足够回答问题
-   - 足够 → 直接输出
-   - 不够 → 重查MQL生成 → 返回步骤 3 重新执行
+统一流程：
+1. 意图识别 - 拆解为写入句/查询句 + lifecycle 档位判断
+2a. 写入流程 - 写入句→INSERT MQL生成→执行（无NL输出）
+2b. 查询流程 - 查询句→SELECT MQL生成→执行→混合重排→生成NL→反思审查
+3. 拼接输出 - 多个查询的 NL 回答拼接
 
 参考：MEMU_TEXT2MEM_REFERENCE.md 第十章
 """
@@ -19,9 +15,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from .rewriter import QueryRewriter
+from .intent_classifier import IntentClassifier
+from .write_mql_generator import WriteMQLGenerator
 from .mql_generator import MQLGenerator
 from .hybrid_search import HybridSearch
+from ..mql import Interpreter
 
 
 # =============================================================================
@@ -131,37 +129,25 @@ REGENERATE_MQL_PROMPT = """# Task
 """
 
 
-class NLSearchPipeline:
+class NLPipeline:
     """
-    NL 检索流水线（简化版，含循环重查）
+    统一 NL Pipeline（意图识别 + 写入/查询分流）
+
+    流程：
+    1. 意图识别 → 拆解写入句/查询句
+    2a. 写入句 → INSERT MQL → 执行（无NL输出）
+    2b. 查询句 → SELECT MQL → 执行 → 混合重排 → NL生成 → 反思审查（含重查循环）
+    3. 拼接多个查询的NL回答
 
     Attributes:
-        STEPS: 流水线步骤列表，每项为 (step_id, description)
         llm: LLM 客户端
         mem: MemorySystem 实例
-        rewriter: QueryRewriter 实例
+        intent_classifier: IntentClassifier 实例
+        write_gen: WriteMQLGenerator 实例
         mql_gen: MQLGenerator 实例
         hybrid: HybridSearch 实例
         max_retries: 最大重查次数（默认 3）
     """
-
-    STEPS = [
-        ("rewrite", "查询重写"),
-        ("nl_to_mql", "NL→MQL生成"),
-        ("execute_mql", "执行MQL"),
-        ("hybrid_rerank", "混合重排"),
-        ("generate_nl", "生成NL回答"),
-        ("reflection_review", "反思审查"),
-    ]
-
-    # 阶段 ID 常量（用于跳转）
-    STAGE_REWRITE = 2
-    STAGE_NL_TO_MQL = 3
-    STAGE_EXECUTE_MQL = 4
-    STAGE_HYBRID_RERANK = 5
-    STAGE_GENERATE_NL = 6
-    STAGE_REFLECTION = 7
-    STAGE_REGENERATE_MQL = 8  # 新增：重查MQL生成
 
     def __init__(
         self,
@@ -171,304 +157,253 @@ class NLSearchPipeline:
         debug: bool = False,
         max_retries: int = 3,
     ):
-        """
-        初始化 NL 检索流水线。
-
-        Args:
-            llm_client: LLM 客户端，需支持 async chat 方法
-            memory_system: MemorySystem 实例，提供 execute() 方法
-            model: LLM 模型名称
-            debug: 是否开启调试输出
-            max_retries: 最大重查次数（默认 3）
-        """
         self.llm = llm_client
         self.mem = memory_system
         self.model = model
         self.debug = debug
         self.max_retries = max_retries
         self.holder = getattr(memory_system, "holder", "我")
-        self.rewriter = QueryRewriter(llm_client, model=model)
-        self.mql_gen = MQLGenerator(llm_client, model=model, debug=debug, system_holder=self.holder)
+        self.intent_classifier = IntentClassifier(
+            llm_client, model=model, system_holder=self.holder, debug=debug
+        )
+        self.write_gen = WriteMQLGenerator(
+            llm_client, model=model, system_holder=self.holder, debug=debug
+        )
+        self.mql_gen = MQLGenerator(
+            llm_client, model=model, debug=debug, system_holder=self.holder
+        )
         self.hybrid = HybridSearch(memory_system)
 
     async def run(self, nl_query: str, history: list[dict], top_k: int = 10) -> dict:
         """
-        执行完整的 NL → 检索流程（含循环重查）。
-
-        流程：查询重写 → MQL生成 → 执行 → 混合重排 → 生成NL → 反思审查
-              ↑（如果反思审查需要重查）──────────────────→ 重查MQL生成 → 执行 → 混合重排 → 生成NL → 反思审查 → ...
+        执行完整的 NL 流程（意图识别 + 写入/查询分流）。
 
         Args:
-            nl_query: 自然语言查询
-            history: 对话历史列表，每项为 {"role": "user"/"assistant", "content": "..."}
+            nl_query: 自然语言输入
+            history: 对话历史列表
             top_k: 检索返回的最大结果数（-1 表示由 LLM 自行决定）
 
         Returns:
             dict，包含：
-            - type: "direct" 或 "retrieved"
-            - response: 最终回答
-            - mql: 生成的 MQL 语句
-            - result: 检索结果列表
-            - rewritten_query: 重写后的查询
-            - llm_calls: 本次查询的 LLM 调用次数
+            - type: "write_only" / "query_only" / "mixed" / "empty"
+            - response: 最终回答（仅查询部分，写入无NL输出）
+            - writes: 写入结果列表
+            - queries: 各查询的结果列表
+            - mql: 生成的所有 MQL 语句
+            - llm_calls: 本次调用的 LLM 调用次数
             - steps_summary: 各步骤执行摘要
-            - retry_count: 重查次数
+            - intent: 意图识别结果
         """
-        # ----------------------------------------------------------------
-        # 初始化全局状态
-        # ----------------------------------------------------------------
-        state: dict[str, Any] = {
-            "query": nl_query,
-            "history": history,
-            "rewritten_query": nl_query,
-            "mql": "",
-            "mql_confidence": 0.0,
-            "mql_fallback": False,
-            "result": [],
-        }
         all_steps_summary: list[str] = []
         llm_calls = 0
-        retry_count = 0
-        final_response = ""
-        prev_mql = ""  # 记录上一次MQL，用于重查生成
 
-        # ----------------------------------------------------------------
-        # Stage 2: 查询重写（跳过预检索，直接开始）
-        # ----------------------------------------------------------------
-        state, llm_calls = await self._step2_rewrite(state, history, all_steps_summary, llm_calls)
+        # =====================================================================
+        # Stage 1: 意图识别
+        # =====================================================================
+        intent_result = await self.intent_classifier.classify(nl_query, history)
+        llm_calls += 1
+        writes = intent_result["writes"]
+        queries = intent_result["queries"]
+        lifecycle = intent_result["lifecycle"]
+        reference_duration = intent_result["reference_duration"]
 
-        # ----------------------------------------------------------------
-        # 主循环：最多 max_retries 次重查
-        # ----------------------------------------------------------------
-        next_stage = self.STAGE_NL_TO_MQL  # 首次从 MQL生成 开始
+        all_steps_summary.append(
+            f"1.意图识别→{len(writes)}条写入 + {len(queries)}条查询 "
+            f"(lifecycle={lifecycle})"
+        )
 
-        while retry_count <= self.max_retries:
-            retry_count += 1
-            if retry_count > 1:
-                all_steps_summary.append(f"↩ 重查 #{retry_count - 1}（跳转至 Stage {next_stage}）")
+        if self.debug:
+            print(f"[NLPipeline DEBUG] writes={writes}, queries={queries}, lifecycle={lifecycle}")
 
-            # ----------------------------------------------------------------
-            # Stage 3 / Stage 8: MQL生成 或 重查MQL生成
-            # ----------------------------------------------------------------
-            if next_stage <= self.STAGE_NL_TO_MQL:
-                state, llm_calls, next_stage = await self._step3_nl_to_mql(
-                    state, top_k, all_steps_summary, llm_calls
-                )
-                if next_stage != self.STAGE_NL_TO_MQL:
-                    continue
-
-            # ----------------------------------------------------------------
-            # Stage 4: 执行MQL
-            # ----------------------------------------------------------------
-            state = self._step4_exec_mql(state, all_steps_summary)
-
-            # ----------------------------------------------------------------
-            # Stage 5: 混合重排
-            # ----------------------------------------------------------------
-            state, all_steps_summary = await self._step5_hybrid_rerank(
-                state, top_k, all_steps_summary
+        # =====================================================================
+        # Stage 2a: 写入流程（如有写入句）
+        # =====================================================================
+        write_results = []
+        write_mql_list = []
+        if writes:
+            write_mql_result = await self.write_gen.generate(
+                writes, reference_duration=reference_duration
             )
+            llm_calls += 1
+            write_mql_script = write_mql_result["mql_script"]
 
-            # ----------------------------------------------------------------
-            # Stage 6: 生成NL回答
-            # ----------------------------------------------------------------
-            nl_response, llm_calls, next_stage = await self._step6_generate_nl(
-                state, all_steps_summary, llm_calls
-            )
-            if next_stage != self.STAGE_GENERATE_NL:
-                continue
+            if write_mql_script:
+                try:
+                    interp = Interpreter()
+                    interp.bind("mem", self.mem)
+                    write_results = interp.execute_script(write_mql_script)
+                except Exception as e:
+                    if self.debug:
+                        print(f"[NLPipeline DEBUG] write execute error: {e}")
+                    write_results = []
 
-            # ----------------------------------------------------------------
-            # Stage 7: 反思审查
-            # ----------------------------------------------------------------
-            review_result, llm_calls = await self._step7_reflection_review(
-                state, nl_response, all_steps_summary, llm_calls
-            )
-            final_response = nl_response  # 默认用生成的回答
+                write_mql_list = [p.strip() for p in write_mql_script.split(";") if p.strip()]
 
-            if not review_result.get("retry"):
-                # 足够，直接输出
-                all_steps_summary.append(
-                    f"7.反思审查→✅ 足够（{len(state['result'])}条记忆），输出结果"
-                )
-                _llm_stats["total_calls"] += llm_calls
-                _llm_stats["query_count"] += 1
-                _llm_stats["calls_detail"].append({
-                    "query": nl_query,
-                    "calls": llm_calls,
-                    "retries": retry_count - 1,
-                })
-                return self._build_result(
-                    type_="retrieved",
-                    state=state,
-                    llm_calls=llm_calls,
-                    steps_summary=all_steps_summary,
-                    retry_count=retry_count - 1,
-                    nl_response=final_response,
-                    final_mql=state.get("mql", ""),
-                )
-
-            # 需要重查
-            reflection_hint = review_result.get("hint", "")
-            prev_mql = state.get("mql", "")
             all_steps_summary.append(
-                f"7.反思审查→🔄 需重查：{reflection_hint}"
+                f"2a.写入流程→{len(write_mql_list)}条INSERT, "
+                f"{sum(1 for r in write_results if getattr(r, 'type', '') == 'insert')}条成功"
             )
 
-            # ----------------------------------------------------------------
-            # Stage 8: 重查MQL生成（带反思提示）
-            # ----------------------------------------------------------------
-            state, llm_calls = await self._step8_regenerate_mql(
-                state, top_k, prev_mql, reflection_hint, all_steps_summary, llm_calls
-            )
-            next_stage = self.STAGE_EXECUTE_MQL  # 重查MQL生成后，跳转执行
+        # =====================================================================
+        # Stage 2b: 查询流程（如有查询句）
+        # =====================================================================
+        query_nl_responses = []
+        query_results_all = []
+        query_mql_list = []
 
-        # 达到最大重查次数
-        all_steps_summary.append(f"⚠️ 达到最大重查次数（{self.max_retries}），返回最后一次结果")
+        if queries:
+            # 为每个查询句单独走查询流程
+            for qi, query_stmt in enumerate(queries):
+                qi_label = f"Q{qi+1}" if len(queries) > 1 else ""
+                nl_resp, q_results, q_mql, q_llm_calls = await self._run_query_flow(
+                    query_stmt, top_k, all_steps_summary, qi_label
+                )
+                llm_calls += q_llm_calls
+                query_nl_responses.append({
+                    "query": query_stmt,
+                    "response": nl_resp,
+                    "results": q_results,
+                    "mql": q_mql,
+                })
+                query_results_all.extend(q_results)
+                query_mql_list.extend(p.strip() for p in q_mql.split(";") if p.strip())
+
+        # =====================================================================
+        # Stage 3: 拼接输出
+        # =====================================================================
+        # 类型判定
+        has_writes = len(writes) > 0
+        has_queries = len(queries) > 0
+        if has_writes and has_queries:
+            type_ = "mixed"
+        elif has_writes:
+            type_ = "write_only"
+        elif has_queries:
+            type_ = "query_only"
+        else:
+            type_ = "empty"
+
+        # NL 回答拼接：只有查询部分有NL输出
+        final_response = ""
+        if query_nl_responses:
+            if len(query_nl_responses) == 1:
+                final_response = query_nl_responses[0]["response"]
+            else:
+                # 多查询拼接
+                parts = []
+                for qr in query_nl_responses:
+                    if qr["response"].strip():
+                        parts.append(qr["response"].strip())
+                final_response = "\n\n".join(parts)
+
+        # 所有 MQL
+        all_mql = ";".join(write_mql_list + query_mql_list)
+
+        # 统计
         _llm_stats["total_calls"] += llm_calls
         _llm_stats["query_count"] += 1
         _llm_stats["calls_detail"].append({
             "query": nl_query,
             "calls": llm_calls,
-            "retries": retry_count - 1,
+            "writes": len(writes),
+            "queries": len(queries),
         })
-        return self._build_result(
-            type_="retrieved",
-            state=state,
-            llm_calls=llm_calls,
-            steps_summary=all_steps_summary,
-            retry_count=retry_count - 1,
-            nl_response=nl_response,
-            final_mql=state.get("mql", ""),
-        )
+
+        return {
+            "type": type_,
+            "response": final_response,
+            "writes": write_results,
+            "queries": query_nl_responses,
+            "result": query_results_all,  # 兼容旧接口
+            "mql": all_mql,
+            "llm_calls": llm_calls,
+            "steps_summary": all_steps_summary,
+            "intent": {
+                "writes": writes,
+                "queries": queries,
+                "lifecycle": lifecycle,
+                "reference_duration": reference_duration,
+            },
+            "global_stats": {
+                "total_calls": _llm_stats["total_calls"],
+                "total_queries": _llm_stats["query_count"],
+            },
+        }
 
     # =========================================================================
-    # 各阶段实现
+    # 查询流程（单个查询句的完整流程：MQL生成→执行→混合重排→NL→反思审查）
     # =========================================================================
 
-    async def _step2_rewrite(
+    async def _run_query_flow(
         self,
-        state: dict,
-        history: list[dict],
-        steps_summary: list[str],
-        llm_calls: int,
-    ) -> tuple[dict, int]:
-        """Stage 2: 查询重写"""
-        if history:
-            state["query"] = await self.rewriter.rewrite(state["query"], history)
-            state["rewritten_query"] = state["query"]
-            llm_calls += 1
-            steps_summary.append(f"2.查询重写→'{state['query']}'")
-        else:
-            steps_summary.append("2.查询重写→跳过（无历史）")
-        return state, llm_calls
-
-    async def _step3_nl_to_mql(
-        self,
-        state: dict,
+        query_stmt: str,
         top_k: int,
         steps_summary: list[str],
-        llm_calls: int,
-    ) -> tuple[dict, int, int]:
-        """Stage 3: NL→MQL生成"""
-        mql_plan = await self.mql_gen.generate_with_fallback(state["query"], topk=top_k)
-        state["mql"] = mql_plan["mql"]
-        state["mql_confidence"] = mql_plan.get("confidence", 0.0)
-        state["mql_fallback"] = mql_plan.get("fallback", False)
-        llm_calls += 1
-        use_graph = "GRAPH" in state["mql"].upper()
-        steps_summary.append(
-            f"3.MQL生成→{'GRAPH' if use_graph else '普通查询'} "
-            f"(置信度={state['mql_confidence']:.2f}, "
-            f"{'降级' if state['mql_fallback'] else '正常'})"
-        )
-        return state, llm_calls, self.STAGE_NL_TO_MQL
-
-    def _step4_exec_mql(
-        self, state: dict, steps_summary: list[str]
-    ) -> dict:
-        """Stage 4: 执行MQL"""
-        result = self._exec_mql(state["mql"])
-        state["result"] = result
-        state["mql_raw_count"] = len(result)
-        steps_summary.append(f"4.MQL执行→{len(result)} 条记忆")
-        return state
-
-    async def _step5_hybrid_rerank(
-        self, state: dict, top_k: int, steps_summary: list[str]
-    ) -> tuple[dict, list[str]]:
-        """Stage 5: 混合重排"""
-        if top_k < 0:
-            steps_summary.append("5.混合重排→跳过（top_k=-1，LLM自行决定）")
-        elif "GRAPH" not in state["mql"].upper():
-            # 如果 MQL（TIME过滤）返回了0条，说明时间严格过滤无结果，
-            # 保留0条而不是用向量搜索替换（单值TIME不应被绕过）
-            if state.get("mql_raw_count", 0) == 0:
-                steps_summary.append("5.混合重排→跳过（TIME严格过滤0条，不绕过）")
-            else:
-                reranked = await self.hybrid.search(state["query"], top_k=top_k)
-                state["result"] = reranked
-                steps_summary.append(f"5.混合重排→{len(reranked)} 条（向量搜索重排）")
-        else:
-            steps_summary.append("5.混合重排→跳过（GRAPH查询，保留图扩展结果）")
-        return state, steps_summary
-
-    async def _step6_generate_nl(
-        self,
-        state: dict,
-        steps_summary: list[str],
-        llm_calls: int,
-    ) -> tuple[str, int, int]:
-        """Stage 6: 生成NL回答"""
-        nl_response = await self._generate_nl_response(state["query"], state["result"])
-        llm_calls += 1
-        steps_summary.append(f"6.生成NL回答→{len(nl_response)//50 if nl_response else 0}字")
-        return nl_response, llm_calls, self.STAGE_GENERATE_NL
-
-    async def _step7_reflection_review(
-        self,
-        state: dict,
-        nl_response: str,
-        steps_summary: list[str],
-        llm_calls: int,
-    ) -> tuple[dict, int]:
+        label: str = "",
+    ) -> tuple[str, list[dict], str, int]:
         """
-        Stage 7: 反思审查（简化版）
+        单个查询句的完整流程（含重查循环）。
+
         Returns:
-            (review_result, llm_calls)
-            - review_result: {"retry": bool, "hint": str}
+            (nl_response, results, mql, llm_calls)
         """
-        review_result = await self._reflect_review(
-            state["query"], nl_response, state["result"]
-        )
-        llm_calls += 1
-        return review_result, llm_calls
+        llm_calls = 0
+        retry_count = 0
+        final_response = ""
+        state: dict[str, Any] = {
+            "query": query_stmt,
+            "mql": "",
+            "mql_confidence": 0.0,
+            "mql_fallback": False,
+            "result": [],
+            "mql_raw_count": 0,
+        }
 
-    async def _step8_regenerate_mql(
-        self,
-        state: dict,
-        top_k: int,
-        prev_mql: str,
-        reflection_hint: str,
-        steps_summary: list[str],
-        llm_calls: int,
-    ) -> tuple[dict, int]:
-        """
-        Stage 8: 重查MQL生成（根据反思提示生成改进版MQL）
-        跳转回 Stage 4 执行
-        """
-        mql_plan = await self._regenerate_mql(
-            state["query"], prev_mql, reflection_hint, topk=top_k
-        )
-        state["mql"] = mql_plan["mql"]
-        state["mql_confidence"] = mql_plan.get("confidence", 0.0)
-        state["mql_fallback"] = mql_plan.get("fallback", False)
-        llm_calls += 1
-        steps_summary.append(
-            f"8.重查MQL生成→'{state['mql']}' "
-            f"(置信度={state['mql_confidence']:.2f}, 反思提示: {reflection_hint})"
-        )
-        return state, llm_calls
+        while retry_count <= self.max_retries:
+            retry_count += 1
+
+            # MQL 生成（首次 or 重查）
+            if retry_count == 1:
+                mql_plan = await self.mql_gen.generate_with_fallback(query_stmt, topk=top_k)
+                llm_calls += 1
+            else:
+                mql_plan = await self._regenerate_mql(
+                    query_stmt, state["mql"], reflection_hint
+                )
+                llm_calls += 1
+                steps_summary.append(
+                    f"  {label}重查MQL→'{mql_plan.get('mql', '')}'"
+                )
+
+            state["mql"] = mql_plan["mql"]
+            state["mql_confidence"] = mql_plan.get("confidence", 0.0)
+            state["mql_fallback"] = mql_plan.get("fallback", False)
+
+            # 执行 MQL
+            state["result"] = self._exec_mql(state["mql"])
+            state["mql_raw_count"] = len(state["result"])
+
+            # 混合重排
+            state, _ = await self._hybrid_rerank(state, top_k)
+
+            # 生成 NL
+            nl_response = await self._generate_nl_response(query_stmt, state["result"])
+            llm_calls += 1
+
+            # 反思审查
+            review = await self._reflect_review(query_stmt, nl_response, state["result"])
+            llm_calls += 1
+
+            if not review.get("retry"):
+                final_response = nl_response
+                break
+
+            reflection_hint = review.get("hint", "")
+            if retry_count > self.max_retries:
+                final_response = nl_response
+                break
+
+        return final_response, state["result"], state["mql"], llm_calls
 
     # =========================================================================
     # 内部辅助方法
@@ -487,12 +422,28 @@ class NLSearchPipeline:
         except Exception:
             return []
 
+    async def _hybrid_rerank(
+        self, state: dict, top_k: int
+    ) -> tuple[dict, str]:
+        """混合重排"""
+        if top_k < 0:
+            return state, "跳过（top_k=-1）"
+        elif "GRAPH" not in state["mql"].upper():
+            # TIME 严格过滤0条时不绕过
+            if state.get("mql_raw_count", 0) == 0:
+                return state, "跳过（TIME严格过滤0条，不绕过）"
+            else:
+                reranked = await self.hybrid.search(state["query"], top_k=top_k)
+                state["result"] = reranked
+                return state, f"{len(reranked)}条"
+        else:
+            return state, "跳过（GRAPH查询）"
+
     async def _generate_nl_response(self, nl_query: str, results: list[dict]) -> str:
         """用 LLM 将检索结果转化为自然语言回答。"""
         if not results:
             return "暂时没有相关记忆。"
 
-        # 截断记忆，避免 token 过多导致回答过长
         max_memories = 15
         if len(results) > max_memories:
             results = results[:max_memories]
@@ -514,7 +465,7 @@ class NLSearchPipeline:
             return resp.choices[0].message.content or "（生成失败）"
         except Exception as e:
             if self.debug:
-                print(f"[ResultGenerator DEBUG] LLM error: {e}")
+                print(f"[NLPipeline DEBUG] NL generation error: {e}")
             return "（生成失败）"
 
     async def _reflect_review(
@@ -523,12 +474,7 @@ class NLSearchPipeline:
         nl_response: str,
         results: list[dict],
     ) -> dict[str, Any]:
-        """
-        Stage 7: 反思审查——判断 NL 回答是否足够。
-
-        Returns:
-            {"retry": bool, "hint": str}
-        """
+        """反思审查——判断 NL 回答是否足够。"""
         memories_text = self._build_memories_text(results)
         prompt = REFLECTION_REVIEW_PROMPT.format(
             query=nl_query,
@@ -557,7 +503,7 @@ class NLSearchPipeline:
             }
         except Exception as e:
             if self.debug:
-                print(f"[ReflectionReview DEBUG] LLM error: {e}")
+                print(f"[NLPipeline DEBUG] reflection error: {e}")
             return {"retry": False, "hint": "无", "raw": ""}
 
     async def _regenerate_mql(
@@ -565,11 +511,8 @@ class NLSearchPipeline:
         nl_query: str,
         prev_mql: str,
         reflection_hint: str,
-        topk: int = 10,
     ) -> dict[str, Any]:
-        """
-        Stage 8: 重查MQL生成——根据反思提示生成改进版MQL。
-        """
+        """重查 MQL 生成。"""
         from datetime import datetime
         now = datetime.now()
         prompt = REGENERATE_MQL_PROMPT.format(
@@ -591,7 +534,6 @@ class NLSearchPipeline:
             raw = resp.choices[0].message.content or ""
             mql_text = self._extract_tag(raw, "mql")
             conf_text = self._extract_tag(raw, "confidence")
-            # 防御性修复：如果 MQL 缺少 SELECT 前缀，自动补上
             mql_text = mql_text.strip() if mql_text else ""
             if mql_text and not mql_text.upper().startswith("SELECT"):
                 mql_text = "SELECT * FROM memories " + mql_text
@@ -607,7 +549,7 @@ class NLSearchPipeline:
             }
         except Exception as e:
             if self.debug:
-                print(f"[RegenerateMQL DEBUG] LLM error: {e}")
+                print(f"[NLPipeline DEBUG] regenerate MQL error: {e}")
             return {"mql": prev_mql, "confidence": 0.0, "fallback": True, "raw": ""}
 
     @staticmethod
@@ -631,36 +573,14 @@ class NLSearchPipeline:
                 lines.append(f"[{i}] {content}")
         return "\n".join(lines)
 
-    def _build_result(
-        self,
-        type_: str,
-        state: dict,
-        llm_calls: int,
-        steps_summary: list[str],
-        retry_count: int,
-        nl_response: str,
-        final_mql: str,
-    ) -> dict:
-        """构建最终返回结果。"""
-        global_calls = _llm_stats["total_calls"]
-        global_queries = _llm_stats["query_count"]
-        avg_calls = global_calls / global_queries if global_queries > 0 else llm_calls
 
-        return {
-            "type": type_,
-            "response": nl_response,
-            "mql": final_mql,
-            "result": state["result"],
-            "rewritten_query": state.get("rewritten_query", state["query"]),
-            "llm_calls": llm_calls,
-            "steps_summary": steps_summary,
-            "retry_count": retry_count,
-            "global_stats": {
-                "total_calls": global_calls,
-                "total_queries": global_queries,
-                "avg_calls_per_query": round(avg_calls, 2),
-            },
-        }
+# =============================================================================
+# 向后兼容：NLSearchPipeline 委托给 NLPipeline
+# =============================================================================
+
+class NLSearchPipeline(NLPipeline):
+    """向后兼容类，行为与 NLPipeline 一致。"""
+    pass
 
 
 # =============================================================================
@@ -676,8 +596,6 @@ async def run_nl_pipeline(
     model: str = "gpt-4o-mini",
     debug: bool = False,
 ) -> dict:
-    """
-    便捷入口：创建并运行 NL 检索流水线。
-    """
-    pipeline = NLSearchPipeline(llm_client, memory_system, model=model, debug=debug)
+    """便捷入口：创建并运行 NL Pipeline。"""
+    pipeline = NLPipeline(llm_client, memory_system, model=model, debug=debug)
     return await pipeline.run(nl_query, history)

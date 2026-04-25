@@ -2,24 +2,27 @@
 星尘自然语言处理模块 (nl)
 
 提供自然语言到记忆系统的智能转换能力，包括：
-- NL → MQL 生成器
-- 预检索判断 (Pre-Retrieval Decision)
-- 查询重写 (Query Rewriter)
+- 意图识别 (Intent Classifier)
+- NL → INSERT MQL 生成器
+- NL → SELECT MQL 生成器
+- 查询重写 (Query Rewriter) - 已废弃，由 IntentClassifier 替代
 - 检索充分性检查 (Sufficiency Checker)
 - 6槽记忆提取 (Slot Extractor)
 - 混合检索 (Hybrid Search) - 延迟导入
 - LLM 重排序 (LLM Ranker)
-- NL Pipeline 编排引擎
+- NL Pipeline 编排引擎 (NLPipeline)
 - 去重与记忆强化 (Reinforcement)
 """
 
 from .decision import NLQueryDecider
 from .rewriter import QueryRewriter
+from .intent_classifier import IntentClassifier
+from .write_mql_generator import WriteMQLGenerator
 from .sufficiency import SufficiencyChecker
 from .mql_generator import MQLGenerator
 from .slot_extractor import SlotExtractor, SlotValidator
 from .ranker import MemoryItemRanker
-from .pipeline import NLSearchPipeline
+from .pipeline import NLPipeline, NLSearchPipeline
 from .reinforcement import (
     compute_content_hash,
     compute_recency_decay,
@@ -41,12 +44,15 @@ def __getattr__(name):
 __all__ = [
     "NLQueryDecider",
     "QueryRewriter",
+    "IntentClassifier",
+    "WriteMQLGenerator",
     "SufficiencyChecker",
     "MQLGenerator",
     "SlotExtractor",
     "SlotValidator",
     "HybridSearch",  # 延迟导入
     "MemoryItemRanker",
+    "NLPipeline",
     "NLSearchPipeline",
     # Reinforcement
     "compute_content_hash",

@@ -307,6 +307,50 @@ def do_mql(mql_script):
 # 自然语言查询
 # ============================================================================
 
+def _lifecycle_human(seconds: int) -> str:
+    if seconds >= 999999:
+        return "永久"
+    if seconds >= 86400 * 30:
+        return f"{seconds // 86400}天"
+    if seconds >= 86400:
+        return f"{seconds // 86400}天"
+    if seconds >= 3600:
+        return f"{seconds // 3600}小时"
+    return f"{seconds}秒"
+
+
+def _item_slots_str(item: dict) -> str:
+    parts = _parse_sentence_parts(item.get("query_sentence", ""))
+    active = {k: v for k, v in parts.items() if v and v != "<无>"}
+    if not active:
+        return ""
+    return " | ".join(f"{k}={v}" for k, v in active.items())
+
+
+def _format_item_detail(item: dict, index: int) -> list[str]:
+    lines = []
+    content = item.get("content", "") or item.get("query_sentence", "")
+    mid = item.get("id", item.get("memory_id", ""))[:12]
+    lifecycle = item.get("lifecycle", 0)
+    created = str(item.get("created_at", ""))[:16]
+    distance = item.get("distance", None)
+    score = item.get("score", None)
+
+    lines.append(f"  #{index}  {content[:120]}")
+    slots_str = _item_slots_str(item)
+    if slots_str:
+        lines.append(f"      槽位: {slots_str}")
+    parts = [f"id={mid}", f"周期={_lifecycle_human(lifecycle)}"]
+    if created:
+        parts.append(f"创建={created}")
+    if distance is not None:
+        parts.append(f"距离={distance:.4f}")
+    if score is not None:
+        parts.append(f"分数={score:.4f}")
+    lines.append(f"      [{', '.join(parts)}]")
+    return lines
+
+
 def do_nl_query(nl_query: str, top_k: int):
     if not nl_query.strip():
         return "❌ 请输入自然语言查询"
@@ -333,42 +377,111 @@ def do_nl_query(nl_query: str, top_k: int):
     try:
         result = asyncio.run(_run())
         lines = [f"🤖 自然语言查询: {nl_query}"]
-        items = result.get("result", [])
-        lines.append(f"📊 检索到 {len(items)} 条记忆")
+        lines.append("─" * 60)
+
+        # ── 意图识别概览 ──
+        intent = result.get("intent", {})
+        n_writes = len(intent.get("writes", []))
+        n_queries = len(intent.get("queries", []))
+        pipeline_type = result.get("type", "query_only")
+
+        type_icons = {"write_only": "📝 写入", "query_only": "🔍 查询", "mixed": "📝🔍 写入+查询", "empty": "❓ 空"}
+        lines.append(f"📋 类型: {type_icons.get(pipeline_type, pipeline_type)}")
+        if n_writes > 0 or n_queries > 0:
+            parts = []
+            if n_writes > 0:
+                parts.append(f"📝 {n_writes}条写入")
+            if n_queries > 0:
+                parts.append(f"🔍 {n_queries}条查询")
+            lifecycle = intent.get("lifecycle", "short")
+            lines.append(f"   {', '.join(parts)}  |  档位: {lifecycle} ({_lifecycle_human(intent.get('reference_duration', 86400))})")
 
         llm_calls = result.get("llm_calls", 0)
-        retry_count = result.get("retry_count", 0)
-        if retry_count > 0:
-            lines.append(f"🔄 LLM 调用 {llm_calls} 次（含重查 {retry_count} 次）")
-        else:
-            lines.append(f"🔄 LLM 调用 {llm_calls} 次")
+        lines.append(f"🔄 LLM 调用: {llm_calls} 次")
+        lines.append("")
 
+        # ── 步骤摘要 ──
         steps = result.get("steps_summary", [])
         if steps:
+            lines.append("📋 流程步骤:")
             for s in steps:
                 lines.append(f"   {s}")
+            lines.append("")
 
-        lines.append("")
-        if result.get("mql"):
-            lines.append(f"📝 生成 MQL:\n   {result['mql']}")
+        # ── 意图详情 ──
+        if intent.get("writes"):
+            lines.append("📝 识别到的写入句:")
+            for w in intent["writes"]:
+                lines.append(f"   → {w}")
             lines.append("")
-        nl_resp = result.get("response", "")
-        if nl_resp:
-            lines.append(f"💬 {nl_resp}")
+        if intent.get("queries"):
+            lines.append("🔍 识别到的查询句:")
+            for q in intent["queries"]:
+                lines.append(f"   → {q}")
             lines.append("")
-        if items:
+
+        # ── 写入执行结果 ──
+        if pipeline_type in ("write_only", "mixed"):
+            writes = result.get("writes", [])
+            if writes:
+                lines.append(f"✅ 写入结果 ({len(writes)} 条):")
+                for w in writes:
+                    wtype = getattr(w, "type", "?")
+                    wmsg = getattr(w, "message", "")
+                    wids = getattr(w, "memory_ids", [])
+                    lines.append(f"   [{wtype}] {wmsg}")
+                    if wids:
+                        lines.append(f"   记忆ID: {', '.join(wids[:3])}")
+                lines.append("")
+            else:
+                lines.append("⚠️ 写入执行结果为空（可能 LLM 生成 MQL 失败）")
+                lines.append("")
+
+        # ── 每个查询的结果 ──
+        query_results_list = result.get("queries", [])
+        if query_results_list:
+            for qi, qr in enumerate(query_results_list):
+                q_query = qr.get("query", f"查询{qi+1}")
+                q_response = qr.get("response", "")
+                q_mql = qr.get("mql", "")
+                q_items = qr.get("results", [])
+
+                label = f"查询 {qi+1}" if len(query_results_list) > 1 else "查询"
+                lines.append(f"── {label}: {q_query} ──")
+
+                if q_mql:
+                    lines.append(f"   MQL: {q_mql}")
+
+                if q_response:
+                    lines.append(f"   💬 {q_response}")
+
+                if q_items:
+                    lines.append(f"   📄 {len(q_items)} 条相关记忆:")
+                    for i, item in enumerate(q_items, 1):
+                        lines.extend(_format_item_detail(item, i))
+                else:
+                    lines.append("   📄 无相关记忆")
+
+                lines.append("")
+
+        # ── 兼容旧接口: 平面列表 ──
+        items = result.get("result", [])
+        if items and not query_results_list:
             lines.append("📄 检索结果:")
             for i, item in enumerate(items, 1):
-                content = item.get("content", "") or item.get("query_sentence", "")
-                mid = item.get("id", item.get("memory_id", ""))
-                lifecycle = item.get("lifecycle", "")
-                created = str(item.get("created_at", ""))[:16]
-                distance = item.get("distance", None)
-                detail = f"id={mid}" + (f",lifecycle={lifecycle}" if lifecycle else "") + (f",创建={created}" if created else "") + (f",距离={distance:.4f}" if distance is not None else "")
-                lines.append(f"  {i}. {content[:80]}")
-                lines.append(f"     [{detail}]")
-        else:
-            lines.append("📄 未检索到相关记忆")
+                lines.extend(_format_item_detail(item, i))
+            lines.append("")
+
+        # ── 生成的所有 MQL ──
+        if result.get("mql"):
+            lines.append("─" * 60)
+            lines.append(f"📝 完整 MQL:\n   {result['mql']}")
+            lines.append("")
+
+        # ── 全局统计 ──
+        gs = result.get("global_stats", {})
+        if gs:
+            lines.append(f"📊 全局统计: 累计 {gs.get('total_calls', 0)} 次 LLM 调用 / {gs.get('total_queries', 0)} 次查询")
 
         return "\n".join(lines)
     except Exception as e:

@@ -807,6 +807,9 @@ class APIServer:
             "slots": result.get("slots", {}),
             "result_count": len(result.get("result", [])),
             "results": [self._serialize_memory(r) for r in result.get("result", [])],
+            "intent": result.get("intent", {}),
+            "writes": len(result.get("writes", [])),
+            "llm_calls": result.get("llm_calls", 0),
         }
 
         try:

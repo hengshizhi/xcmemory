@@ -182,9 +182,14 @@ TIME/TOPK/LIMIT 按书写顺序执行：
 
 # 输出格式（必须严格遵循）
 <analysis>意图+关键槽位+是否使用GRAPH及原因</analysis>
-<mql>生成的MQL语句</mql>
+<mql>生成的MQL语句（多条用分号分隔）</mql>
 <slots>{{"time":"","subject":"","action":"","object":"","purpose":"","result":""}}</slots>
 <confidence>0.0-1.0</confidence>
+
+注意：
+- 当有多个独立查询时，生成多条 SELECT，用分号分隔
+- 每条 SELECT 必须以 `SELECT * FROM memories` 开头
+- 单个查询只需一条 SELECT
 
 # Input
 自然语言查询: {query}
@@ -302,12 +307,20 @@ class MQLGenerator:
         operation = self._extract_operation(analysis, mql)
 
         # 防御性修复：如果 LLM 生成的 MQL 缺少 SELECT 前缀，自动补上
+        # 支持多行 MQL（分号分隔），每条独立修复
         mql = mql.strip()
-        if mql and not mql.upper().startswith("SELECT"):
-            mql = "SELECT * FROM memories " + mql
+        if mql:
+            parts = [p.strip() for p in mql.split(";") if p.strip()]
+            fixed_parts = []
+            for p in parts:
+                if not p.upper().startswith("SELECT"):
+                    p = "SELECT * FROM memories " + p
+                fixed_parts.append(p)
+            mql = ";".join(fixed_parts)
 
         return {
             "mql": mql,
+            "mql_list": [p.strip() for p in mql.split(";") if p.strip()] if mql else [],
             "slots": slots or {},
             "confidence": confidence,
             "operation": operation,
