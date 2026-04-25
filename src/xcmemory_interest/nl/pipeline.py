@@ -419,6 +419,17 @@ class NLPipeline:
             state["result"] = self._exec_mql(state["mql"])
             state["mql_raw_count"] = len(state["result"])
 
+            # ⚡ 0 条 + 首次 + 非GRAPH → 跳过 NL/反思，直接重查
+            if retry_count == 1 and state["mql_raw_count"] == 0 and "GRAPH" not in state["mql"].upper():
+                steps_summary.append(
+                    f"  {label}MQL返回0条→自动重查"
+                )
+                reflection_hint = "MQL returned 0 results, likely incorrect subject/slot mapping or wrong keywords — try broader conditions or different slot values"
+                if retry_count >= self.max_retries:
+                    final_response = "暂时没有相关记忆。"
+                    break
+                continue
+
             # 混合重排
             state, _ = await self._hybrid_rerank(state, top_k)
 
@@ -455,7 +466,11 @@ class NLPipeline:
                 return mql_result
             else:
                 return []
-        except Exception:
+        except Exception as e:
+            if self.debug:
+                print(f"[NLPipeline DEBUG] MQL execution error: {e}")
+                import traceback
+                traceback.print_exc()
             return []
 
     async def _hybrid_rerank(
