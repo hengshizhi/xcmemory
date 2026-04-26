@@ -122,7 +122,23 @@ REGENERATE_MQL_PROMPT = """# Task
 4. 如果反思提示说"内容太少"，可以增加 LIMIT 或去掉严格限制
 5. 如果反思提示说"应该查XX方面"，需要在 MQL 中体现这个方向
 6. 必须生成合法的 MQL 语句
-7. 涉及相对时间词时，根据当前时间换算为绝对年份/月份
+7. 涉及相对时间词时，根据当前时间换算为绝对年份/月份/日期
+
+# ★★★ 当前时间参考 ★★★
+当前时间：{current_date}
+- "今天"→ TIME year({current_year}) AND month({current_month}) AND day({current_day})
+- "昨天"→ TIME year({current_year}) AND month({current_month}) AND day({prev_day})
+- "前天"→ TIME year({current_year}) AND month({current_month}) AND day({prev2_day})
+- "明天"→ TIME year({current_year}) AND month({current_month}) AND day({next_day})
+- "去年"→ TIME year({last_year})
+- "上个月"→ TIME year({prev_year}) AND month({prev_month})
+
+# ★★★ 语法要点 ★★★
+⚠️ TIME 是独立子句，不能用 AND 连接到 WHERE！
+   错误：WHERE subject='星织' AND TIME year(2026)
+   正确：WHERE subject='星织' TIME year(2026)
+⚠️ 不要用 LIKE 做时间过滤！用 TIME 关键字：TIME year(2026) AND month(04)
+❌ 禁止：BETWEEN / ORDER BY / GROUP BY / JOIN / 子查询
 
 # 输出格式（严格遵循）
 <mql>改进后的 MQL 语句</mql>
@@ -416,8 +432,26 @@ class NLPipeline:
             state["mql_fallback"] = mql_plan.get("fallback", False)
 
             # 执行 MQL
-            state["result"] = self._exec_mql(state["mql"])
-            state["mql_raw_count"] = len(state["result"])
+            results, mql_error = self._exec_mql(state["mql"])
+            state["result"] = results
+            state["mql_raw_count"] = len(results)
+
+            # ⚡ MQL 语法错误 → 带错误信息重试
+            if mql_error:
+                steps_summary.append(
+                    f"  {label}MQL语法错误→自动重试（{mql_error[:60]}）"
+                )
+                reflection_hint = (
+                    f"上一条 MQL 有语法错误：{mql_error}。"
+                    f"请重新生成正确的 MQL，注意："
+                    f"1. TIME 是独立子句，不能用 AND 连接 "
+                    f"2. 不支持 WHERE time LIKE，用 TIME year() AND month() AND day() "
+                    f"3. WHERE 子句只支持 field='value' 或 field=value 格式"
+                )
+                if retry_count >= self.max_retries:
+                    final_response = "暂时没有相关记忆。（MQL 语法错误，重试未修复）"
+                    break
+                continue
 
             # ⚡ 0 条 + 首次 + 非GRAPH → 跳过 NL/反思，直接重查
             if retry_count == 1 and state["mql_raw_count"] == 0 and "GRAPH" not in state["mql"].upper():
@@ -456,39 +490,57 @@ class NLPipeline:
     # 内部辅助方法
     # =========================================================================
 
-    def _exec_mql(self, mql: str) -> list[dict]:
-        """执行 MQL 语句并返回结果列表。"""
+    def _exec_mql(self, mql: str) -> tuple[list[dict], str]:
+        """执行 MQL 语句并返回结果列表和错误信息。
+
+        Returns:
+            (results, error_msg) - error_msg 为空串表示成功
+        """
         try:
             mql_result = self.mem.execute(mql)
             if hasattr(mql_result, "data"):
-                return mql_result.data or []
+                return mql_result.data or [], ""
             elif isinstance(mql_result, list):
-                return mql_result
+                return mql_result, ""
             else:
-                return []
+                return [], ""
         except Exception as e:
+            err_msg = str(e)
             if self.debug:
-                print(f"[NLPipeline DEBUG] MQL execution error: {e}")
+                print(f"[NLPipeline DEBUG] MQL execution error: {err_msg}")
                 import traceback
                 traceback.print_exc()
-            return []
+            return [], err_msg
 
     async def _hybrid_rerank(
         self, state: dict, top_k: int
     ) -> tuple[dict, str]:
-        """混合重排"""
+        """混合重排
+
+        策略：
+        - MQL 含 TIME 过滤 → 用 hybrid.rerank()（在 MQL 结果集内重排，不引入新结果）
+        - 其他 → 用 hybrid.search()（全新向量+关键词搜索）
+        """
         if top_k < 0:
             return state, "跳过（top_k=-1）"
-        elif "GRAPH" not in state["mql"].upper():
-            # TIME 严格过滤0条时不绕过
+        elif "GRAPH" in state["mql"].upper():
+            return state, "跳过（GRAPH查询）"
+        elif "TIME" in state["mql"].upper():
+            # TIME 过滤时：在 MQL 结果集内重排，不替换
             if state.get("mql_raw_count", 0) == 0:
                 return state, "跳过（TIME严格过滤0条，不绕过）"
-            else:
-                reranked = await self.hybrid.search(state["query"], top_k=top_k)
-                state["result"] = reranked
-                return state, f"{len(reranked)}条"
+            reranked = await self.hybrid.rerank(
+                state["query"], state["result"], top_k=top_k
+            )
+            state["result"] = reranked
+            return state, f"TIME内重排→{len(reranked)}条"
         else:
-            return state, "跳过（GRAPH查询）"
+            # 无 TIME：全新混合搜索
+            if state.get("mql_raw_count", 0) == 0:
+                return state, "跳过（0条结果）"
+            reranked = await self.hybrid.search(state["query"], top_k=top_k)
+            state["result"] = reranked
+            return state, f"{len(reranked)}条"
 
     async def _generate_nl_response(self, nl_query: str, results: list[dict]) -> str:
         """用 LLM 将检索结果转化为自然语言回答。"""
@@ -564,13 +616,22 @@ class NLPipeline:
         reflection_hint: str,
     ) -> dict[str, Any]:
         """重查 MQL 生成。"""
-        from datetime import datetime
+        from datetime import datetime, timedelta
         now = datetime.now()
         prompt = REGENERATE_MQL_PROMPT.format(
             query=nl_query,
             prev_mql=prev_mql,
             reflection_hint=reflection_hint,
             current_date=now.strftime("%Y-%m-%d %H:%M"),
+            current_year=str(now.year),
+            current_month=f"{now.month:02d}",
+            current_day=f"{now.day:02d}",
+            last_year=str(now.year - 1),
+            prev_year=str(now.year - 1) if now.month > 1 else str(now.year - 1),
+            prev_month=f"{now.month - 1:02d}" if now.month > 1 else "12",
+            prev_day=f"{(now - timedelta(days=1)).day:02d}",
+            prev2_day=f"{(now - timedelta(days=2)).day:02d}",
+            next_day=f"{(now + timedelta(days=1)).day:02d}",
         )
         try:
             resp = await self.llm.chat.completions.create(

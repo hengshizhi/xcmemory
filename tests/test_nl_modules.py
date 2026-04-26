@@ -694,12 +694,13 @@ class TestNLSearchPipeline:
         """测试流水线组件存在"""
         from xcmemory_interest.nl.pipeline import NLPipeline, NLSearchPipeline
 
-        # 验证核心组件存在
-        assert hasattr(NLSearchPipeline, 'intent_classifier')
-        assert hasattr(NLSearchPipeline, 'write_gen')
-        assert hasattr(NLSearchPipeline, 'mql_gen')
-        assert hasattr(NLSearchPipeline, 'hybrid')
-        assert hasattr(NLSearchPipeline, 'run')
+        # NLSearchPipeline 继承自 NLPipeline
+        assert issubclass(NLSearchPipeline, NLPipeline)
+
+        # 验证核心方法存在
+        assert hasattr(NLPipeline, 'run')
+        assert hasattr(NLPipeline, '_run_query_flow')
+        assert hasattr(NLPipeline, '_exec_mql')
 
 
 # ============================================================================

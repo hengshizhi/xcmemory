@@ -85,6 +85,42 @@ class Interpreter:
             return True
         return auth.has_system_access(system_name, require_write)
 
+    @staticmethod
+    def validate_mql(sql: str) -> tuple[bool, str]:
+        """
+        语法检查 MQL 语句（不执行），返回 (是否合法, 错误信息)。
+
+        用于在 NL Pipeline 中提前发现 LLM 生成的语法错误。
+        """
+        import re
+        from .parser import parse
+        from .errors import MQLError
+
+        sql_stripped = sql.strip()
+
+        # 常见语法错误的快速检测（给出友好提示）
+        upper = sql_stripped.upper()
+        if re.search(r'\bAND\s+TIME\b', upper):
+            return False, "语法错误：TIME 是独立子句，不能用 AND 连接。正确：WHERE subject='X' TIME year(2026)，错误：WHERE subject='X' AND TIME year(2026)"
+        if re.search(r'\bWHERE\s+\w+\s+LIKE\s+[\'"]\d{4}', upper):
+            return False, "语法错误：不要用 LIKE 做时间过滤。用 TIME 关键字：TIME year(2026) AND month(04) AND day(25)"
+        if re.search(r'\bBETWEEN\b', upper):
+            return False, "语法错误：MQL 不支持 BETWEEN。用 TIME 范围语法：TIME year(2024 TO 2025)"
+        if re.search(r'\bORDER\s+BY\b', upper):
+            return False, "语法错误：MQL 不支持 ORDER BY。用 TOPK n 按向量匹配度排序"
+        if re.search(r'\bGROUP\s+BY\b', upper):
+            return False, "语法错误：MQL 不支持 GROUP BY"
+        if re.search(r'\bJOIN\b', upper):
+            return False, "语法错误：MQL 不支持 JOIN。用 GRAPH 关键字做多跳关联"
+
+        try:
+            parse(sql_stripped)
+            return True, ""
+        except MQLError as e:
+            return False, str(e)
+        except Exception as e:
+            return False, f"未知语法错误: {e}"
+
     def execute(self, sql: str) -> QueryResult:
         """
         执行 MQL 语句

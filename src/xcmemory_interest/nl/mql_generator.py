@@ -73,11 +73,14 @@ SELECT * FROM memories WHERE [slot=value,...] [SEARCH TOPK n] [TIME year(...) AN
 # ★★★ 当前时间（重要！生成 TIME 时必须参考此信息）★★★
 当前时间：{current_date}
 - 当用户说"今天"→ TIME year({current_year}) AND month({current_month}) AND day({current_day})
+- 当用户说"昨天"→ TIME year({current_year}) AND month({current_month}) AND day({prev_day})
+- 当用户说"前天"→ TIME year({current_year}) AND month({current_month}) AND day({prev2_day})
+- 当用户说"明天"→ TIME year({current_year}) AND month({current_month}) AND day({next_day})
 - 当用户说"今年"→ TIME year({current_year})
 - 当用户说"去年"→ TIME year({last_year})
 - 当用户说"本月"→ TIME year({current_year}) AND month({current_month})
 - 当用户说"上个月"→ TIME year({prev_year}) AND month({prev_month})
-所有相对时间词必须根据当前时间换算为绝对年份/月份！
+所有相对时间词必须根据当前时间换算为绝对年份/月份/日期！
 
 # ★★★ TIME 时间过滤语法（重要！）★★★
 当用户的查询涉及**时间范围**时，使用 TIME 关键字按记忆创建时间过滤。
@@ -116,6 +119,8 @@ TIME [year(Y [TO Y | *]) [AND month(M [TO M | *]) [AND day(D [TO D | *]) [AND cl
 - "晚上的记忆" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(18:00 TO 23:59)
 - "白天发生过什么" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(06:00 TO 18:00)
 - "平时晚上的习惯" → SELECT * FROM memories WHERE time='平时' AND subject='{holder}'（用 time 槽位，不用 TIME）
+- "昨天做了什么" → SELECT * FROM memories WHERE subject='{holder}' TIME year({current_year}) AND month({current_month}) AND day({prev_day})
+- "前天的事" → SELECT * FROM memories WHERE subject='{holder}' TIME year({current_year}) AND month({current_month}) AND day({prev2_day})
 
 ## 执行顺序
 TIME/TOPK/LIMIT 按书写顺序执行：
@@ -158,6 +163,8 @@ TIME/TOPK/LIMIT 按书写顺序执行：
 - "晚上的记忆" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(18:00 TO 23:59)
 - "平时晚上的习惯" → SELECT * FROM memories WHERE time='平时' AND subject='{holder}'（time 槽位匹配，非 TIME 过滤）
 - "我白天做过什么" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(06:00 TO 18:00)
+- "星织昨天做了什么" → SELECT * FROM memories WHERE subject='星织' TIME year({current_year}) AND month({current_month}) AND day({prev_day})
+- "昨天做了什么" → SELECT * FROM memories WHERE subject='{holder}' TIME year({current_year}) AND month({current_month}) AND day({prev_day})
 
 # ★★★ 跨槽位多关键字搜索（重要！★★★）
 当用户询问**同时涉及多个主题或关键字**的记忆时，使用 bare string 跨槽位 AND 语法：
@@ -179,6 +186,23 @@ TIME/TOPK/LIMIT 按书写顺序执行：
 - "既提到恋人又提到哥哥的记忆" → SELECT * FROM memories WHERE '恋人' AND '哥哥' LIMIT 20
 - "关于慢慢来、牵手、哥哥的记忆" → SELECT * FROM memories WHERE '慢慢来' AND '牵手' AND '哥哥' LIMIT 20
 - "星织相关的记忆中，哪些也提到了血缘" → SELECT * FROM memories WHERE subject='星织' AND '血缘' LIMIT 20
+
+# ★★★ 禁止语法（重要！违反会导致语法错误！）★★️
+
+⚠️ 最常犯的错误（必须避免）⚠️
+❌ `WHERE ... AND TIME` — TIME 是独立子句，不能用 AND 连接！
+   错误：SELECT * FROM memories WHERE subject='星织' AND TIME year(2026) AND month(04) AND day(25)
+   正确：SELECT * FROM memories WHERE subject='星织' TIME year(2026) AND month(04) AND day(25)
+   ↑↑↑ 注意 WHERE 和 TIME 之间没有 AND！
+
+其他禁止语法：
+1. ❌ `WHERE time LIKE '2026-04%'` — 不要用 LIKE 做时间过滤！用 TIME 关键字：TIME year(2026) AND month(04)
+2. ❌ `BETWEEN` — 不支持 WHERE year BETWEEN 2024 AND 2025，用 TIME year(2024 TO 2025) 替代
+3. ❌ `IN (...)` — 不支持 WHERE subject IN ('A','B')，用多条 SELECT 分号分隔替代
+4. ❌ `ORDER BY` — 不支持，用 TOPK n 按向量匹配度排序替代
+5. ❌ `GROUP BY / HAVING / COUNT / SUM` — 不支持聚合函数
+6. ❌ `JOIN / LEFT JOIN` — 不支持，用 GRAPH 替代
+7. ❌ 子查询 — 不支持 SELECT ... WHERE ... IN (SELECT ...)
 
 # 输出格式（必须严格遵循）
 <analysis>意图+关键槽位+是否使用GRAPH及原因</analysis>
@@ -275,7 +299,7 @@ class MQLGenerator:
         else:
             topk_hint = f"（请在MQL的LIMIT子句中使用 {topk} 作为结果数量上限）"
 
-        from datetime import datetime
+        from datetime import datetime, timedelta
         now = datetime.now()
         prompt = NL_TO_MQL_PROMPT.format(
             query=nl_query,
@@ -288,6 +312,9 @@ class MQLGenerator:
             last_year=str(now.year - 1),
             prev_year=str(now.year - 1) if now.month > 1 else str(now.year - 1),
             prev_month=f"{now.month - 1:02d}" if now.month > 1 else "12",
+            prev_day=f"{(now - timedelta(days=1)).day:02d}",
+            prev2_day=f"{(now - timedelta(days=2)).day:02d}",
+            next_day=f"{(now + timedelta(days=1)).day:02d}",
         )
         response = await self._call_llm(prompt)
 
@@ -345,13 +372,26 @@ class MQLGenerator:
             print(f"[MQLGenerator DEBUG] generate_with_fallback final: mql={result['mql']!r}, confidence={result['confidence']}, fallback={result.get('fallback', False)}")
 
         if result["confidence"] < threshold:
+            # Fallback：保留原始 MQL 中的 WHERE 条件（如果有），只做最小降级
+            original_mql = result["mql"]
+            # 如果原始 MQL 有 WHERE 条件，保留它并加上 SEARCH TOPK
+            if "WHERE" in original_mql.upper():
+                # 去掉已有的 LIMIT/TOPK，加上 SEARCH TOPK
+                mql_clean = original_mql
+                for kw in [" LIMIT ", " TOPK ", " LIMIT", " TOPK"]:
+                    idx = mql_clean.upper().find(kw)
+                    if idx != -1:
+                        mql_clean = mql_clean[:idx]
+                fallback_mql = mql_clean.strip() + " SEARCH TOPK 10"
+            else:
+                fallback_mql = "SELECT * FROM memories SEARCH TOPK 10"
             return {
-                "mql": "SELECT * FROM memories SEARCH TOPK 10",
-                "slots": {},
+                "mql": fallback_mql,
+                "slots": result.get("slots", {}),
                 "confidence": result["confidence"],
                 "operation": "hybrid_search",
                 "fallback": True,
-                "original_mql": result["mql"],
+                "original_mql": original_mql,
             }
 
         result["fallback"] = False

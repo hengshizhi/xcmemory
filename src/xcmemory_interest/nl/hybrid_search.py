@@ -130,6 +130,64 @@ class HybridSearch:
 
         return scored_results[:top_k]
 
+    async def rerank(self, query: str, candidates: List[Dict], top_k: int = 10) -> List[Dict]:
+        """
+        对已有候选结果做混合重排（不替换候选集）。
+
+        用于 MQL 含 TIME 过滤等场景：MQL 已筛选出合法结果，
+        混合重排只负责重新打分排序，不会引入新结果。
+
+        Args:
+            query: 自然语言查询
+            candidates: MQL 过滤后的结果列表（dict 格式）
+            top_k: 返回数量
+
+        Returns:
+            重排后的结果列表（子集 of candidates）
+        """
+        if not candidates:
+            return []
+
+        keywords = self._extract_keywords(query)
+
+        scored = []
+        for mem_dict in candidates:
+            content = mem_dict.get("content", "")
+            query_sentence = mem_dict.get("query_sentence", "")
+
+            # 向量分数：用已有的 distance 字段（如果有的话）
+            distance = mem_dict.get("distance", 0.0)
+            if isinstance(distance, str):
+                try:
+                    distance = float(distance)
+                except (ValueError, TypeError):
+                    distance = 0.0
+            vector_score = max(0.0, 1.0 - float(distance) / 2.0)
+
+            # 关键词分数
+            keyword_score = self._keyword_score(keywords, content, query_sentence)
+
+            # 短语精确奖励
+            phrase_bonus = self._phrase_bonus(query, content)
+
+            # 混合分数
+            final_score = (
+                self.alpha * vector_score
+                + self.beta * keyword_score
+                + phrase_bonus * self.phrase_bonus_weight
+            )
+
+            # 在原 dict 上追加分数字段，保留所有原始字段
+            ranked = dict(mem_dict)
+            ranked["score"] = final_score
+            ranked["vector_score"] = vector_score
+            ranked["keyword_score"] = keyword_score
+            ranked["phrase_bonus"] = phrase_bonus
+            scored.append(ranked)
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored[:top_k]
+
     def _extract_keywords(self, query: str) -> Set[str]:
         """
         简单分词 + 停用词过滤

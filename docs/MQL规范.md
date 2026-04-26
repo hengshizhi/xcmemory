@@ -1,13 +1,246 @@
-# MQL 书写规范
+# MQL 完整语法规范
 
-星辰记忆系统的记忆写入格式规范。
+Memory Query Language — 星辰记忆系统的查询与操作语言。
 
 ---
 
-## 一、基本结构
+## 一、总览
+
+MQL 是类 SQL 的领域语言，用于操作记忆系统。支持以下语句类型：
+
+| 类型 | 语句 | 说明 |
+|------|------|------|
+| **查询** | SELECT | 检索记忆（支持 WHERE/TIME/GRAPH/TOPK/LIMIT） |
+| **写入** | INSERT | 新增记忆 |
+| **修改** | UPDATE | 修改记忆内容 |
+| **删除** | DELETE | 删除记忆（支持 DRYRUN 预览） |
+| **图查询** | GRAPH | 多跳关联扩展 |
+| **函数** | DEFINE / WRAP | 定义命名查询 / 包装 SQL |
+| **系统管理** | CREATE/DROP/LIST/USE | 数据库管理 |
+| **用户管理** | CREATE USER / GRANT / REVOKE | 权限控制 |
+
+### 多行执行
+
+用分号 `;` 分隔多条语句，支持批量执行：
 
 ```sql
-INSERT INTO memories VALUES ('<time><subject><action><object><purpose><result>', 'description', lifecycle);
+SELECT * FROM memories WHERE subject='星织' LIMIT 5;
+INSERT INTO memories VALUES ('<平时><星织><是><温柔><无><无>', '星织很温柔', 999999);
+```
+
+### 注释
+
+行注释：`-- 这是注释`
+
+---
+
+## 二、SELECT 查询语法
+
+### 完整语法
+
+```
+SELECT <fields> FROM memories
+  [WHERE <conditions> | WHERE [slot=value,...] SEARCH [TOPK n]]
+  [VERSION vN]
+  [GRAPH <graph_operation>]
+  [TIME <time_filter>]
+  [TOPK n]
+  [LIMIT n]
+  [WRAP(<sql>)]
+```
+
+### 子句执行顺序
+
+```
+WHERE → VERSION → GRAPH → ops(TIME/TOPK/LIMIT 按书写顺序) → LIMIT 截断
+```
+
+> **关键**：TIME 是独立子句，**不能用 AND 连接到 WHERE**！
+> - ✅ `WHERE subject='星织' TIME year(2026)`  ← 正确
+> - ❌ `WHERE subject='星织' AND TIME year(2026)` ← 语法错误
+
+### 字段列表
+
+```sql
+SELECT * FROM memories              -- 所有字段
+SELECT subject, action FROM memories  -- 指定字段
+SELECT ALL FROM memories             -- 等价于 *
+```
+
+**合法字段**：
+- 槽位字段：`time`, `subject`, `action`, `object`, `purpose`, `result`
+- 元数据字段：`id`, `content`, `lifecycle`, `created_at`, `updated_at`
+
+---
+
+## 三、WHERE 条件
+
+### 方式一：显式字段条件
+
+```sql
+WHERE subject='星织' AND action='是'
+WHERE lifecycle > 86400
+WHERE created_at >= '2026-04-01'
+```
+
+**支持的运算符**：
+
+| 运算符 | 示例 | 说明 |
+|--------|------|------|
+| `=` / `==` | `subject='星织'` | 等于 |
+| `!=` | `subject!='星织'` | 不等于 |
+| `<` / `>` | `lifecycle > 86400` | 比较 |
+| `<=` / `>=` | `lifecycle >= 86400` | 比较 |
+| `LIKE` | `subject LIKE '星%'` | 模式匹配（`%`通配） |
+| `IN` | `subject IN ['星织','绯绯']` | 列表包含 |
+
+> **注意**：虽然 WHERE 子句内支持 LIKE/IN，但**时间过滤请用 TIME 关键字**，
+> 不要用 `WHERE time LIKE '2026-04%'`，这是错误用法。
+
+### 方式二：跨槽位裸字符串
+
+```sql
+WHERE '哥哥' AND '绯绯'   -- 在任意槽位中搜索包含这些关键词的记忆
+WHERE '慢慢来'             -- 单个关键词
+```
+
+用单引号包裹的关键词会在所有 6 个槽位中做子串匹配，多个关键词用 AND 连接表示全部满足。
+
+### 方式三：向量搜索
+
+```sql
+WHERE [subject='星织', action='学', object='编程'] SEARCH TOPK 10
+WHERE subject='星织' SEARCH TOPK 5     -- 等值条件自动转为搜索槽位
+```
+
+---
+
+## 四、TIME 时间过滤
+
+**TIME 按 `created_at`（记忆创建时间戳）过滤，是独立子句，不属于 WHERE。**
+
+### 语法
+
+```
+TIME [year(Y [TO Y | OR Y | *]) [AND month(M [TO M | OR M | *]) [AND day(D [TO D | OR D | *]) [AND clock(HH:MM [TO HH:MM | *])]]]]
+```
+
+### 四个维度
+
+| 维度 | 格式 | 取值范围 | 说明 |
+|------|------|----------|------|
+| `year` | `year(2026)` / `year(2024 TO 2025)` / `year(*)` | 任意正整数 | 年份 |
+| `month` | `month(04)` / `month(01 TO 03)` / `month(*)` | 1-12 | 月份 |
+| `day` | `day(22)` / `day(01 TO 15)` / `day(*)` | 1-31 | 日期 |
+| `clock` | `clock(09:00 TO 18:00)` / `clock(*)` | HH:MM | 日内时段 |
+
+- 单值等价于范围：`year(2026)` = `year(2026 TO 2026)`
+- `*` 表示不限制该维度
+- 不写的维度 = `*`（不过滤）
+- OR 语法：`month(01 OR 09)` 匹配 1 月或 9 月
+
+### 示例
+
+```sql
+-- 2024年创建的记忆
+SELECT * FROM memories WHERE subject='星织' TIME year(2024)
+
+-- 2024年1-3月
+SELECT * FROM memories WHERE subject='星织' TIME year(2024) AND month(01 TO 03)
+
+-- 今天（假设今天是2026-04-26）
+SELECT * FROM memories WHERE subject='星织' TIME year(2026) AND month(04) AND day(26)
+
+-- 每天18:00-23:59
+SELECT * FROM memories WHERE subject='星织' TIME clock(18:00 TO 23:59)
+
+-- 2025年每月21-30号的下午
+SELECT * FROM memories TIME year(2025) AND day(21 TO 30) AND clock(12:30 TO 20:00)
+```
+
+### TIME vs time 槽位
+
+| 对比 | time 槽位 | TIME 过滤 |
+|------|-----------|-----------|
+| 含义 | 记忆内容的时间标签 | 记忆创建时间的时间戳 |
+| 语法 | `WHERE time='平时'` | `TIME year(2024) AND month(01 TO 03)` |
+| 场景 | "平时的习惯" → 搜 time 槽位 | "2024年的记忆" → TIME 过滤 |
+
+---
+
+## 五、TOPK 排序
+
+过滤后按向量匹配度排序取前 k 条：
+
+```sql
+SELECT * FROM memories WHERE subject='星织' TOPK 5
+SELECT * FROM memories WHERE subject='星织' TIME year(2026) TOPK 10 LIMIT 5
+```
+
+---
+
+## 六、GRAPH 图查询
+
+对已有记忆做多跳关联扩展。
+
+### 操作类型
+
+| 操作 | 语法 | 说明 |
+|------|------|------|
+| EXPAND | `GRAPH EXPAND(HOPS n)` | 扩展 n 跳邻居 |
+| EXPAND | `GRAPH EXPAND(HOPS n MIN_SHARED m)` | 最少共享 m 个槽位 |
+| NEIGHBORS | `GRAPH NEIGHBORS(MIN_SHARED m)` | 获取直接邻居 |
+| CONNECTED | `GRAPH CONNECTED(MIN_SHARED m)` | 获取连通分量 |
+| PATH | `GRAPH PATH(TO 'memory_id')` | 查找到目标的路径 |
+| VALUE_CHAIN | `GRAPH VALUE_CHAIN(SLOTS [subject, object])` | 沿槽位值链追踪 |
+
+### 示例
+
+```sql
+-- 自我分析
+SELECT * FROM memories WHERE subject='星织' GRAPH EXPAND(HOPS 2) LIMIT 20
+
+-- 关系探索
+SELECT * FROM memories WHERE '哥哥' GRAPH CONNECTED(MIN_SHARED 2) LIMIT 30
+```
+
+---
+
+## 七、VERSION / LIMIT / WRAP
+
+### VERSION
+
+```sql
+SELECT * FROM memories WHERE subject='星织' VERSION v1
+SELECT * FROM memories WHERE subject='星织' VERSION 2
+```
+
+### LIMIT
+
+```sql
+SELECT * FROM memories WHERE subject='星织' LIMIT 10
+```
+
+### WRAP
+
+```sql
+SELECT * FROM memories WRAP(SELECT * FROM memories WHERE subject='星织' LIMIT 5)
+```
+
+### DEFINE
+
+```sql
+DEFINE my_view AS SELECT * FROM memories WHERE subject='星织' LIMIT 10
+```
+
+---
+
+## 八、INSERT 写入语法
+
+### 语法
+
+```sql
+INSERT INTO memories VALUES ('<time><subject><action><object><purpose><result>', 'description', reference_duration);
 ```
 
 ### 三个参数
@@ -15,12 +248,14 @@ INSERT INTO memories VALUES ('<time><subject><action><object><purpose><result>',
 | 参数 | 格式 | 作用 |
 |------|------|------|
 | `query_sentence` | 六槽 `<>` 包裹字符串 | 查询时的匹配依据 |
-| `description` | 自然语言描述 | 六槽内容的语义解释，不重复六槽已有信息 |
-| `lifecycle` | 整数（秒） | 记忆有效期 |
+| `content` | 自然语言描述 | 六槽内容的语义解释 |
+| `reference_duration` | 整数（秒），可选 | 参考生命周期（默认 86400） |
+
+> `reference_duration` 省略或为 NULL 时，由 LifecycleManager 用默认值 86400 决策。
 
 ---
 
-## 二、六槽详解
+## 九、六槽详解
 
 ```
 <time><subject><action><object><purpose><result>
@@ -29,64 +264,26 @@ INSERT INTO memories VALUES ('<time><subject><action><object><purpose><result>',
 
 ### ① time 槽 —— 时间标签
 
-**只能是单一时间词**，不能与 subject 合并。
+time 槽是记忆**内容**的时间标签，不是创建时间戳。按创建时间过滤用 `TIME` 关键字。
 
-time 槽是记忆**内容**的时间标签（如"平时"、"深夜"），不是记忆创建时间的时间戳。如需按创建时间过滤，请使用 `TIME` 关键字（见下方）。
-
-| 时间词 | 语义 | lifecycle |
-|--------|------|-----------|
-| `平时` | 永久事实、习惯性状态、角色设定 | 999999 |
-| `少年期` | 12-15 岁期间的过去事件 | 999999 |
+| 时间词 | 语义 | reference_duration |
+|--------|------|---------------------|
+| `平时` | 永久事实、习惯性状态 | 999999 |
+| `少年期` | 12-15 岁期间 | 999999 |
 | `童年` | 幼年时期 | 999999 |
-| `那天晚上` | 某次具体事件（当晚发生的事） | 86400 或 604800 |
-| `深夜` | 深夜时段发生的事 | 86400 |
-| `早上` | 早上时段发生的事 | 86400 |
-| `本周早些时候` | 本周内的事件 | 604800 |
-| `2026-04-17` | 具体日期 | 按重要性 |
+| `那天晚上` | 某次具体事件 | 86400 或 604800 |
+| `深夜` | 深夜时段 | 86400 |
+| `早上` | 早上时段 | 86400 |
+| `本周早些时候` | 本周内事件 | 604800 |
+| `YYYY-MM-DD` | 具体日期 | 按重要性 |
 
-> **禁止**：`<近日>` `<最近>` `<前些时候>` 等未约定词汇。
-
----
-
-### TIME 时间过滤关键字
-
-`TIME` 按**记忆创建时间戳**（`created_at`）过滤，与 time 槽位是两个概念：
-
-| 对比 | time 槽位 | TIME 过滤 |
-|------|-----------|-----------|
-| 含义 | 记忆内容的时间标签 | 记忆创建时间的时间戳 |
-| 语法 | `WHERE time='平时'` | `TIME year(2024) AND month(01 TO 03)` |
-| 场景 | "平时的习惯" → 搜 time 槽位 | "2024年的记忆" → TIME 过滤 |
-
-**TIME 语法**：
-```sql
-TIME [year(Y [TO Y | *]) [AND month(M [TO M | *]) [AND day(D [TO D | *]) [AND clock(HH:MM [TO HH:MM | *])]]]]
-```
-
-**示例**：
-```sql
--- 2024年创建的记忆
-SELECT * FROM memories TIME year(2024)
-
--- 2024年1-3月的记忆
-SELECT * FROM memories TIME year(2024) AND month(01 TO 03)
-
--- 每天18:00-23:59的记忆
-SELECT * FROM memories TIME clock(18:00 TO 23:59)
-
--- 2025年每月21-30号的下午记忆
-SELECT * FROM memories TIME year(2025) AND day(21 TO 30) AND clock(12:30 TO 20:00)
-```
-
-> **执行顺序**：TIME/TOPK/LIMIT 按书写顺序执行。
+> **禁止**：`<近日>` `<最近>` `<前些时候>` 等模糊词汇。
 
 ### ② subject 槽 —— 主体
 
 执行动作或承受状态的角色：`星织`、`用户`、`哥哥`、`绯绯`、`父亲`、`助手`。
 
 ### ③ action 槽 —— 核心动词
-
-决定后续槽位如何填充的关键槽。
 
 | action | 语义 | 填充模式 |
 |--------|------|----------|
@@ -102,313 +299,119 @@ SELECT * FROM memories TIME year(2025) AND day(21 TO 30) AND clock(12:30 TO 20:0
 
 ### ④ object 槽 —— 动作承受者/目标
 
-action 的直接宾语。
-
 ### ⑤ purpose 槽 —— 目的/原因/条件
-
-说明为什么/在什么条件下。
 
 ### ⑥ result 槽 —— 结果/补充说明
 
-action 的结果或最终状态。
-
 ---
 
-## 三、lifecycle 分配规则
+## 十、六槽等长原则
 
-| 数值 | 秒数 | 用途 |
-|------|------|------|
-| 999999 | 永久 | 身份、性格、角色设定、扮演规则、长期关系 |
-| 604800 | 一周 | 本周早些时候的事件 |
-| 86400 | 一天 | 日常互动、临时对话 |
-
-**lifecycle 与 time 槽语义必须一致**：`平时/少年期/童年` → 999999；`本周早些时候` → 604800；`那天晚上/深夜/早上` → 86400。
-
----
-
-## 四、六槽等长原则
-
-### 核心规则
-
-六槽必须严格等长，缺槽用 `<无>` 占位，不能多也不能少。
-
-### ✅ 正确 —— 六个槽位完整
+六槽必须严格等长，缺槽用 `<无>` 占位：
 
 ```sql
+-- ✅ 正确：六个槽位完整
 INSERT INTO memories VALUES ('<平时><星织><是><女性><无><无>', '星织是女性', 999999);
-```
 
-### ❌ 错误 —— 少一个槽
-
-```sql
+-- ❌ 错误：少一个槽
 INSERT INTO memories VALUES ('<平时><星织><是><女性><无>', '星织是女性', 999999);
-```
 
-### ❌ 错误 —— 多一个槽
-
-```sql
+-- ❌ 错误：多一个槽
 INSERT INTO memories VALUES ('<平时><星织><是><女性><无><无><无>', '星织是女性', 999999);
 ```
 
 ---
 
-## 五、时间槽正确使用
-
-### 核心规则
-
-time 槽必须是单一时间词，subject 不能塞进 time 槽。
-
-### ✅ 正确 —— time="早上"，subject="哥哥"
+## 十一、UPDATE / DELETE
 
 ```sql
-INSERT INTO memories VALUES ('<早上><哥哥><醒来><星织还在睡><同意陪着><无>', '早上哥哥醒来，星织还在睡，星织同意让哥哥陪着', 86400);
-```
+-- 修改记忆内容
+UPDATE memories SET content='新内容', lifecycle=999999 WHERE id='mem_xxx'
 
-### ❌ 错误 —— 把 subject "早上" 塞进 time 槽 "平时"
+-- 删除记忆
+DELETE FROM memories WHERE subject='临时'
 
-```sql
-INSERT INTO memories VALUES ('<平时><早上><哥哥醒来><星织还在睡><同意陪着><无>', '早上哥哥醒来...', 86400);
+-- 预览删除（不实际执行）
+DELETE FROM memories WHERE subject='临时' DRYRUN
+DELETE FROM memories WHERE subject='临时' DRY RUN
 ```
 
 ---
 
-## 六、action 槽选择原则
-
-### 核心规则
-
-根据语义选择正确的 action 动词，action 决定后续槽位的填充模式。
-
-### ✅ 正确 —— 用 `<与>` 描述关系
+## 十二、系统管理 & 用户管理
 
 ```sql
-INSERT INTO memories VALUES ('<平时><星织><与><绯绯><血缘关系><同父异母>', '绯绯和星织是同父异母的兄妹', 999999);
-```
+-- 系统管理
+CREATE DATABASE my_system
+DROP DATABASE my_system
+LIST DATABASES
+USE my_system
 
-### ❌ 错误 —— 用 `<是>` 描述关系
-
-```sql
-INSERT INTO memories VALUES ('<平时><星织><是><绯绯同父异母妹妹><无><无>', '绯绯和星织是同父异母的兄妹', 999999);
-```
-
-### ✅ 正确 —— 用 `<的>` 描述属性
-
-```sql
-INSERT INTO memories VALUES ('<平时><星织><的><年龄><年龄><18岁>', '星织现在18岁', 999999);
-```
-
-### ❌ 错误 —— 用 `<是>` 描述属性
-
-```sql
-INSERT INTO memories VALUES ('<平时><星织><是><18岁><无><无>', '星织现在18岁', 999999);
+-- 用户管理
+CREATE USER alice
+DROP USER alice
+LIST USERS
+GRANT read ON my_system TO alice
+GRANT write ON my_system TO alice
+REVOKE read ON my_system FROM alice
+GENERATE KEY FOR alice
 ```
 
 ---
 
-## 七、槽位语义分工原则
+## 十三、常见错误汇总
 
-### 核心规则
-
-object / purpose / result 三个槽各司其职，语义不能重叠。
-
-### ✅ 正确 —— `<同意>` 的标准填充
+### 1. TIME 不能用 AND 连接到 WHERE
 
 ```sql
-INSERT INTO memories VALUES ('<深夜><星织><同意><绯绯><发展恋人关系><慢慢来>', '星织同意与绯绯发展恋人关系，但要求慢慢来', 999999);
+-- ❌ 错误
+SELECT * FROM memories WHERE subject='星织' AND TIME year(2026) AND month(04) AND day(25)
+
+-- ✅ 正确：WHERE 和 TIME 之间没有 AND
+SELECT * FROM memories WHERE subject='星织' TIME year(2026) AND month(04) AND day(25)
 ```
 
-| 槽位 | 内容 | 语义 |
-|------|------|------|
-| action | `<同意>` | 核心动作 |
-| object | `<绯绯>` | 同意谁 |
-| purpose | `<发展恋人关系>` | 同意做什么 |
-| result | `<慢慢来>` | 结果/条件 |
-
-### ❌ 错误 —— object 槽包含完整句子
+### 2. 时间过滤不要用 WHERE LIKE
 
 ```sql
-INSERT INTO memories VALUES ('<平时><星织><同意><与绯绯发展恋人关系><慢慢来><无><无>', '星织同意与绯绯发展恋人关系', 999999);
+-- ❌ 错误：不要用 LIKE 做时间过滤
+SELECT * FROM memories WHERE time LIKE '2026-04-25%'
+
+-- ✅ 正确：用 TIME 关键字
+SELECT * FROM memories TIME year(2026) AND month(04) AND day(25)
 ```
 
-**问题**：object 槽 "与绯绯发展恋人关系" 已经包含了完整语义，purpose 和 result 变成无法填充的 `<无>`。
-
-### ❌ 错误 —— action 槽包含完整句子
-
-```sql
-INSERT INTO memories VALUES ('<平时><星织><同意与哥哥><发展感情><坚持慢慢来><建立信任基础>', '星织同意与哥哥发展感情', 999999);
-```
-
-**问题**：action 槽 `<同意与哥哥>` 是完整动作描述，应该只放 `<同意>`，object 槽放 `<哥哥>`。
-
-### ✅ 正确 —— 修正后
-
-```sql
-INSERT INTO memories VALUES ('<深夜><星织><同意><哥哥><发展感情><坚持慢慢来>', '星织同意与哥哥发展感情，逐步建立信任基础', 999999);
-```
-
----
-
-## 八、lifecycle 与 time 一致性原则
-
-### 核心规则
-
-time 槽的语义必须与 lifecycle 数值匹配。
-
-### ✅ 正确 —— `<平时>` 配 999999
-
-```sql
-INSERT INTO memories VALUES ('<平时><星织><是><学院开创者><无><无>', '星织是学院开创者', 999999);
-```
-
-### ❌ 错误 —— `<本周早些时候>` 配 999999
-
-```sql
-INSERT INTO memories VALUES ('<本周早些时候><星织><公园烧烤约会><同意约会><分享食物拍照牵手成功>', '公园烧烤约会', 999999);
-```
-
-**问题**：本周早些时候的事件是一周内的临时记忆，应该配 604800，不是永久的 999999。
-
-### ✅ 正确 —— 修正后
-
-```sql
-INSERT INTO memories VALUES ('<本周早些时候><星织><公园烧烤约会><同意约会><分享食物拍照牵手成功>', '公园烧烤约会', 604800);
-```
-
-### ✅ 正确 —— `<深夜>` 配 86400
-
-```sql
-INSERT INTO memories VALUES ('<深夜><哥哥><偷偷进入><星织房间><星织同意><无>', '哥哥偷偷进入星织房间，星织同意', 86400);
-```
-
----
-
-## 九、单一事实原则
-
-### 核心规则
-
-一条记忆只表达一个独立事实。如果能用一个查询词召回多个事实，就必须拆成多条。
-
-### ✅ 正确 —— 关系拆分：每个主体一条
-
-```sql
--- 事实1：绯绯的愿望
-INSERT INTO memories VALUES ('<平时><绯绯><希望><星织><发展><恋人>', '绯绯希望星织发展成恋人关系', 999999);
--- 事实2：星织的同意
-INSERT INTO memories VALUES ('<深夜><星织><同意><绯绯><发展恋人关系><慢慢来>', '星织同意与绯绯发展恋人关系，但要求慢慢来', 999999);
-```
-
-### ❌ 错误 —— 合并成一条
-
-```sql
--- 错误：把两个主体的事实合并
-INSERT INTO memories VALUES ('<平时><绯绯><希望星织发展恋人关系但星织要求慢慢来><无><无><无>', '绯绯希望星织发展成恋人关系，但星织要求慢慢来', 999999);
-```
-
-### ✅ 正确 —— 属性拆分：每个属性一条
-
-```sql
-INSERT INTO memories VALUES ('<平时><星织><的><年龄><年龄><18岁>', '星织现在18岁', 999999);
-INSERT INTO memories VALUES ('<平时><星织><的><身高><身高><169cm>', '身高169cm', 999999);
-INSERT INTO memories VALUES ('<平时><星织><的><头发><颜色><暗红色>', '暗红色头发', 999999);
-```
-
-### ❌ 错误 —— 合并多个属性
-
-```sql
--- 错误：把多个属性塞进一个槽
-INSERT INTO memories VALUES ('<平时><星织><是><18岁169cm暗红色头发><无><无>', '星织18岁，身高169cm，暗红色头发', 999999);
-```
-
----
-
-## 十、常见错误汇总
-
-### 1. 六槽数量错误
+### 3. 六槽数量错误
 
 | 情况 | 示例 |
 |------|------|
 | ❌ 少一个槽 | `'<平时><星织><是><女性><无>'` |
 | ✅ 正确 | `'<平时><星织><是><女性><无><无>'` |
 
-### 2. time 槽塞入 subject
+### 4. time 槽塞入 subject
 
 | 情况 | 示例 |
 |------|------|
 | ❌ 错误 | `'<平时><早上><哥哥醒来>...'` |
 | ✅ 正确 | `'<早上><哥哥><醒来>...'` |
 
-### 3. action 槽包含完整动作描述
+### 5. action 槽包含完整动作描述
 
 | 情况 | 示例 |
 |------|------|
 | ❌ 错误 | `'<平时><星织><同意与哥哥><发展感情>...'` |
 | ✅ 正确 | `'<深夜><星织><同意><哥哥><发展感情>...'` |
 
-### 4. object 槽包含完整句子
-
-| 情况 | 示例 |
-|------|------|
-| ❌ 错误 | `'<平时><星织><同意><与绯绯发展恋人关系><慢慢来><无><无>'` |
-| ✅ 正确 | `'<深夜><星织><同意><绯绯><发展恋人关系><慢慢来>'` |
-
-### 5. action 选择错误
-
-| 情况 | action | 示例 |
-|------|--------|------|
-| ❌ 用 `<是>` 描述关系 | `<是>` | `'<平时><星织><是><绯绯妹妹><无><无>'` |
-| ✅ 用 `<与>` 描述关系 | `<与>` | `'<平时><星织><与><绯绯><血缘关系><同父异母>'` |
-
 ### 6. lifecycle 与 time 不一致
 
-| 情况 | time | lifecycle | 示例 |
-|------|------|-----------|------|
-| ❌ 错误 | `<本周早些时候>` | 999999 | `'...<公园烧烤约会>...', 999999)` |
-| ✅ 正确 | `<本周早些时候>` | 604800 | `'...<公园烧烤约会>...', 604800)` |
-
-### 7. 使用未约定的时间词
-
-| 情况 | 示例 |
-|------|------|
-| ❌ 禁止 | `<近日>` `<最近>` `<前些时候>` |
-| ✅ 可用 | `<平时>` `<深夜>` `<早上>` `<那天晚上>` `<本周早些时候>` |
+| 情况 | time | lifecycle |
+|------|------|-----------|
+| ❌ 错误 | `<本周早些时候>` | 999999 |
+| ✅ 正确 | `<本周早些时候>` | 604800 |
 
 ---
 
-## 十一、检查清单
-
-每写一条 INSERT，对照检查：
-
-- [ ] **六槽等长**：六个 `<>` 槽位，缺槽用 `<无>` 占位，不能多不能少
-- [ ] **time 槽合规**：仅限词汇表内的单一时间词，不是短语
-- [ ] **action 正确**：根据语义选择对的动词
-- [ ] **槽位语义不重叠**：object/purpose/result 各司其职，不重复含义
-- [ ] **lifecycle 一致**：time 语义与数值匹配
-- [ ] **单一事实**：这条记忆只表达一个独立事实
-- [ ] **召回测试**：用一个查询词能召回这条记忆吗？
-
----
-
-## 十二、示例：完整流程
-
-**输入**：绯绯希望星织发展成恋人关系，星织同意但要求慢慢来
-
-**分析**：
-- 事实1：绯绯的愿望（subject=绯绯，action=希望，object=星织）
-- 事实2：星织的同意（subject=星织，action=同意，object=绯绯，purpose=发展恋人关系，result=慢慢来）
-- 时间：绯绯的愿望是长期态度用 `<平时>`；星织的同意是某个深夜的对话用 `<深夜>`
-
-**书写**：
-
-```sql
--- 事实1：绯绯的愿望
-INSERT INTO memories VALUES ('<平时><绯绯><希望><星织><发展><恋人>', '绯绯希望星织发展成恋人关系', 999999);
-
--- 事实2：星织的同意
-INSERT INTO memories VALUES ('<深夜><星织><同意><绯绯><发展恋人关系><慢慢来>', '星织同意与绯绯发展恋人关系，但要求慢慢来', 999999);
-```
-
----
-
-## 十三、踩坑经验
+## 十四、踩坑经验
 
 （以下由 AI 在实际调用中自动积累）
 
