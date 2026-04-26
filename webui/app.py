@@ -22,10 +22,10 @@ _debug_mode = False
 _is_admin = False
 _active_system_name = None
 
-SLOT_NAMES = ["time", "subject", "action", "object", "purpose", "result"]
-TABLE_HEADERS = ["ID", "time", "subject", "action", "object", "purpose", "result", "内容(前80字)", "lifecycle", "创建时间", "更新时间"]
-SEARCH_HEADERS = ["ID", "time", "subject", "action", "object", "purpose", "result", "lifecycle", "距离", "匹配槽位"]
-MQL_HEADERS = ["ID", "time", "subject", "action", "object", "purpose", "result", "内容(前80字)", "lifecycle", "创建时间"]
+SLOT_NAMES = ["scene", "subject", "action", "object", "purpose", "result"]
+TABLE_HEADERS = ["ID", "scene", "subject", "action", "object", "purpose", "result", "内容(前80字)", "lifecycle", "创建时间", "更新时间"]
+SEARCH_HEADERS = ["ID", "scene", "subject", "action", "object", "purpose", "result", "lifecycle", "距离", "匹配槽位"]
+MQL_HEADERS = ["ID", "scene", "subject", "action", "object", "purpose", "result", "内容(前80字)", "lifecycle", "创建时间"]
 
 # ============================================================================
 # 初始化（由 start_server.py 调用）
@@ -100,7 +100,7 @@ def _build_df(rows_data, headers):
             content_val = str(row.get("content", "") or "")[:80]
             rows.append({
                 "ID": str(row.get("id", "")),
-                "time": parts.get("time", ""),
+                "scene": parts.get("scene", ""),
                 "subject": parts.get("subject", ""),
                 "action": parts.get("action", ""),
                 "object": parts.get("object", ""),
@@ -124,7 +124,7 @@ def _build_search_df(rows_data):
             content_val = str(row.get("content", "") or "")[:80]
             rows.append({
                 "ID": str(row.get("id", "")),
-                "time": parts.get("time", ""),
+                "scene": parts.get("scene", ""),
                 "subject": parts.get("subject", ""),
                 "action": parts.get("action", ""),
                 "object": parts.get("object", ""),
@@ -147,7 +147,7 @@ def _build_mql_df(rows_data):
             content_val = str(row.get("content", "") or "")
             rows.append({
                 "ID": str(row.get("id", ""))[:16],
-                "time": parts.get("time", ""),
+                "scene": parts.get("scene", ""),
                 "subject": parts.get("subject", ""),
                 "action": parts.get("action", ""),
                 "object": parts.get("object", ""),
@@ -202,10 +202,10 @@ def do_refresh():
         return pd.DataFrame(columns=TABLE_HEADERS), f"❌ [{sys_name}] 刷新异常: {e}\n{traceback.format_exc()}"
 
 
-def do_add(time_v, subject_v, action_v, object_v, purpose_v, result_v, content, lifecycle):
+def do_add(scene_v, subject_v, action_v, object_v, purpose_v, result_v, content, lifecycle):
     if not content.strip():
         return pd.DataFrame(), "❌ 内容不能为空"
-    qs = f"<{time_v}><{subject_v}><{action_v}><{object_v}><{purpose_v}><{result_v}>"
+    qs = f"<{scene_v}><{subject_v}><{action_v}><{object_v}><{purpose_v}><{result_v}>"
     result, err = _exec_mql(
         f"INSERT INTO memories VALUES ('{qs}', '{content.strip()}', {int(lifecycle)})"
     )
@@ -227,9 +227,9 @@ def do_delete(mid):
 # 向量搜索
 # ============================================================================
 
-def do_subspace_search(time_v, subject_v, action_v, object_v, purpose_v, result_v, top_k):
+def do_subspace_search(scene_v, subject_v, action_v, object_v, purpose_v, result_v, top_k):
     qs = {k: v for k, v in {
-        "time": time_v, "subject": subject_v, "action": action_v,
+        "scene": scene_v, "subject": subject_v, "action": action_v,
         "object": object_v, "purpose": purpose_v, "result": result_v
     }.items() if v}
     if not qs:
@@ -243,9 +243,9 @@ def do_subspace_search(time_v, subject_v, action_v, object_v, purpose_v, result_
     return _build_search_df(result.data if result.data else [])
 
 
-def do_fullspace_search(time_v, subject_v, action_v, object_v, purpose_v, result_v, top_k):
+def do_fullspace_search(scene_v, subject_v, action_v, object_v, purpose_v, result_v, top_k):
     qs = {k: v for k, v in {
-        "time": time_v, "subject": subject_v, "action": action_v,
+        "scene": scene_v, "subject": subject_v, "action": action_v,
         "object": object_v, "purpose": purpose_v, "result": result_v
     }.items() if v}
     if not qs:
@@ -683,7 +683,7 @@ def build_app(pre_auth: bool = False, admin_user: str = "admin"):
             with gr.Row():
                 with gr.Column(scale=1):
                     gr.Markdown("**添加记忆**")
-                    time_in = gr.Textbox(label="time", placeholder="平时")
+                    scene_in = gr.Textbox(label="scene", placeholder="平时")
                     subject_in = gr.Textbox(label="subject", placeholder="我")
                     action_in = gr.Textbox(label="action", placeholder="学习")
                     object_in = gr.Textbox(label="object", placeholder="编程")
@@ -705,7 +705,7 @@ def build_app(pre_auth: bool = False, admin_user: str = "admin"):
             with gr.Row():
                 with gr.Column(scale=1):
                     gr.Markdown("**子空间搜索**")
-                    ss_time = gr.Textbox(label="time")
+                    ss_scene = gr.Textbox(label="scene")
                     ss_subj = gr.Textbox(label="subject")
                     ss_act = gr.Textbox(label="action")
                     ss_obj = gr.Textbox(label="object")
@@ -714,7 +714,7 @@ def build_app(pre_auth: bool = False, admin_user: str = "admin"):
                     ss_k = gr.Number(label="TOPK", value=10)
                     ss_btn = gr.Button("▶ 子空间搜索")
                     gr.Markdown("**全空间搜索**")
-                    fs_time = gr.Textbox(label="time")
+                    fs_scene = gr.Textbox(label="scene")
                     fs_subj = gr.Textbox(label="subject")
                     fs_act = gr.Textbox(label="action")
                     fs_obj = gr.Textbox(label="object")
@@ -796,7 +796,7 @@ def build_app(pre_auth: bool = False, admin_user: str = "admin"):
 
         add_btn.click(
             do_add,
-            inputs=[time_in, subject_in, action_in, object_in, purpose_in, result_in, content_in, lifecycle_in],
+            inputs=[scene_in, subject_in, action_in, object_in, purpose_in, result_in, content_in, lifecycle_in],
             outputs=[table_out, status_out],
         )
 
@@ -808,13 +808,13 @@ def build_app(pre_auth: bool = False, admin_user: str = "admin"):
 
         ss_btn.click(
             do_subspace_search,
-            inputs=[ss_time, ss_subj, ss_act, ss_obj, ss_purp, ss_res, ss_k],
+            inputs=[ss_scene, ss_subj, ss_act, ss_obj, ss_purp, ss_res, ss_k],
             outputs=[search_out],
         )
 
         fs_btn.click(
             do_fullspace_search,
-            inputs=[fs_time, fs_subj, fs_act, fs_obj, fs_purp, fs_res, fs_k],
+            inputs=[fs_scene, fs_subj, fs_act, fs_obj, fs_purp, fs_res, fs_k],
             outputs=[search_out],
         )
 

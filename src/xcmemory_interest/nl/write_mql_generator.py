@@ -25,8 +25,10 @@ WRITE_MQL_PROMPT = """# Task
 # INSERT 语法
 INSERT INTO memories VALUES ('<六槽查询句>', '内容', reference_duration)
 
-- **六槽查询句**格式：`<time><subject><action><object><purpose><result>`
-  - time：时间标签。<平时>(永久) | <少年期/童年>(永久) | <那天晚上/深夜/早上>(一天) | <YYYY-MM-DD>
+- **六槽查询句**格式：`<scene><subject><action><object><purpose><result>`
+  - scene：场景标签（时间场景+空间场景），只用预定义词：
+    - 时间场景：<平时>(永久) | <少年期/童年>(永久) | <那天晚上/深夜/早上/晚上/白天>(一天) | <周末/假期/本周早些时候>(一周) | <YYYY-MM-DD>
+    - 空间场景：<家里/公司/学校/户外/线上/路上>(一天)
   - subject：执行或承受动作的角色。"我"→'{holder}'
   - action：动作词，从预定义列表选：<是><与><的><同意><拒绝><希望><遵循><发生于><发生><想><说><做>
   - object：action 的承受者
@@ -40,7 +42,7 @@ INSERT INTO memories VALUES ('<六槽查询句>', '内容', reference_duration)
 2. subject 是核心角色，通常是{holder}或用户提到的人
 3. action 尽量从预定义列表选，无法匹配时用最接近的单字动词
 4. purpose 和 result 是可选的，没有就填 <无>
-5. time 根据陈述内容判断：提到具体时间用对应标签，否则填 <无>
+5. scene 根据陈述内容判断：提到具体时间用对应时间场景标签，提到地点用对应空间场景标签，否则填 <无>
 
 # ★示例★
 陈述句："星织打算去沃尔玛购物"

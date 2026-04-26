@@ -13,7 +13,7 @@ from .chroma_vector_db import ChromaVectorDB
 
 
 # 槽位定义（与 InterestEncoder 一致）
-SLOT_NAMES = ["time", "subject", "action", "object", "purpose", "result"]
+SLOT_NAMES = ["scene", "subject", "action", "object", "purpose", "result"]
 SLOT_DIM = 64  # 每个槽位64维
 
 

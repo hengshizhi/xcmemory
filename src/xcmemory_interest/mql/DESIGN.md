@@ -30,7 +30,7 @@ DELETE FROM memories WHERE <conditions>
 
 | 字段类型 | 可用字段 |
 |----------|----------|
-| 槽位字段 | `time`, `subject`, `action`, `object`, `purpose`, `result` |
+| 槽位字段 | `scene`, `subject`, `action`, `object`, `purpose`, `result` |
 | 元数据字段 | `id`, `content`, `lifecycle`, `created_at`, `updated_at` |
 | 通配符 | `*`（所有字段） |
 

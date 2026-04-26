@@ -58,7 +58,7 @@ print("2. 准备查询数据")
 print("=" * 60)
 
 # 槽位名称
-SLOT_NAMES = ["time", "subject", "action", "object", "purpose", "result"]
+SLOT_NAMES = ["scene", "subject", "action", "object", "purpose", "result"]
 
 
 def text_to_slot_ids(texts: dict) -> QuerySlots:
@@ -91,7 +91,7 @@ def slots_to_tensor(**kwargs) -> QuerySlots:
 # 3条查询
 queries = [
     {"name": "查询1: 我喜欢学什么？", "slots": {"subject": "我", "action": "学", "purpose": "喜欢"}},
-    {"name": "查询2: 周末做什么？", "slots": {"time": "周末"}},
+    {"name": "查询2: 周末做什么？", "slots": {"scene": "周末"}},
     {"name": "查询3: 怎么保持健康？", "slots": {"purpose": "健康"}},
 ]
 
@@ -121,14 +121,14 @@ print("=" * 60)
 
 # 模拟一些记忆的元数据（实际内容存在KV数据库）
 memories = [
-    {"id": "mem_001", "time": "平时", "subject": "我", "action": "学", "object": "编程", "purpose": "喜欢", "result": "有收获"},
-    {"id": "mem_002", "time": "周末", "subject": "我", "action": "打", "object": "篮球", "purpose": "锻炼身体", "result": "很爽"},
-    {"id": "mem_003", "time": "晚上", "subject": "我", "action": "看", "object": "书", "purpose": "学习知识", "result": "进步"},
-    {"id": "mem_004", "time": "假期", "subject": "我", "action": "去", "object": "旅行", "purpose": "放松心情", "result": "开心"},
-    {"id": "mem_005", "time": "平时", "subject": "我", "action": "写", "object": "代码", "purpose": "工作需要", "result": "完成任务"},
-    {"id": "mem_006", "time": "周末", "subject": "我", "action": "做饭", "object": "美食", "purpose": "享受生活", "result": "满足"},
-    {"id": "mem_007", "time": "晚上", "subject": "我", "action": "散步", "object": "公园", "purpose": "锻炼身体", "result": "健康"},
-    {"id": "mem_008", "time": "假期", "subject": "朋友", "action": "约", "object": "我", "purpose": "一起玩", "result": "很开心"},
+    {"id": "mem_001", "scene": "平时", "subject": "我", "action": "学", "object": "编程", "purpose": "喜欢", "result": "有收获"},
+    {"id": "mem_002", "scene": "周末", "subject": "我", "action": "打", "object": "篮球", "purpose": "锻炼身体", "result": "很爽"},
+    {"id": "mem_003", "scene": "晚上", "subject": "我", "action": "看", "object": "书", "purpose": "学习知识", "result": "进步"},
+    {"id": "mem_004", "scene": "假期", "subject": "我", "action": "去", "object": "旅行", "purpose": "放松心情", "result": "开心"},
+    {"id": "mem_005", "scene": "平时", "subject": "我", "action": "写", "object": "代码", "purpose": "工作需要", "result": "完成任务"},
+    {"id": "mem_006", "scene": "周末", "subject": "我", "action": "做饭", "object": "美食", "purpose": "享受生活", "result": "满足"},
+    {"id": "mem_007", "scene": "晚上", "subject": "我", "action": "散步", "object": "公园", "purpose": "锻炼身体", "result": "健康"},
+    {"id": "mem_008", "scene": "假期", "subject": "朋友", "action": "约", "object": "我", "purpose": "一起玩", "result": "很开心"},
 ]
 
 # 编码并存储
@@ -143,7 +143,7 @@ for mem in memories:
         memory_id=mem["id"],
         vector=vector,
         metadata={
-            "time": mem["time"],
+            "scene": mem["scene"],
             "subject": mem["subject"],
             "action": mem["action"],
             "object": mem["object"],
@@ -178,7 +178,7 @@ for q in queries:
     results = db.search(query_vector=query_vector, top_k=3)
     for r in results:
         m = r["metadata"]
-        print(f"    - <{m['time']}><{m['subject']}><{m['action']}><{m['object']}><{m['purpose']}><{m['result']}> (distance: {r['distance']:.4f})")
+        print(f"    - <{m['scene']}><{m['subject']}><{m['action']}><{m['object']}><{m['purpose']}><{m['result']}> (distance: {r['distance']:.4f})")
 
     # 概率采样器
     print(f"\n  [概率采样器: top_k=8 -> 采样 3]")
@@ -191,7 +191,7 @@ for q in queries:
     )
     for s in sampled:
         m = s["metadata"]
-        print(f"    - <{m['time']}><{m['subject']}><{m['action']}><{m['object']}><{m['purpose']}><{m['result']}> (prob: {s['sample_prob']:.4f})")
+        print(f"    - <{m['scene']}><{m['subject']}><{m['action']}><{m['object']}><{m['purpose']}><{m['result']}> (prob: {s['sample_prob']:.4f})")
 
 # ============================================================
 # 6. 向量空间一致性验证
@@ -201,13 +201,13 @@ print("6. 向量空间一致性验证")
 print("=" * 60)
 
 # 同一内容编码后应该高度相似
-slots1 = slots_to_tensor(time="平时", subject="我", action="学", object="编程", purpose="喜欢", result="有收获")
+slots1 = slots_to_tensor(scene="平时", subject="我", action="学", object="编程", purpose="喜欢", result="有收获")
 vec1 = pipeline.encode(slots1, normalize=True)
 
-slots2 = slots_to_tensor(time="平时", subject="我", action="学", object="编程", purpose="喜欢", result="有收获")
+slots2 = slots_to_tensor(scene="平时", subject="我", action="学", object="编程", purpose="喜欢", result="有收获")
 vec2 = pipeline.encode(slots2, normalize=True)
 
-slots3 = slots_to_tensor(time="周末", subject="我", action="打", object="篮球", purpose="锻炼身体", result="很爽")
+slots3 = slots_to_tensor(scene="周末", subject="我", action="打", object="篮球", purpose="锻炼身体", result="很爽")
 vec3 = pipeline.encode(slots3, normalize=True)
 
 # 计算相似度

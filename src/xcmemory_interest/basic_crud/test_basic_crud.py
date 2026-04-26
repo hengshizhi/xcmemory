@@ -101,7 +101,7 @@ def test_basic_crud():
 
         print("\n  查询2: time=周末")
         results = crud.search_fullspace(
-            query_slots={"time": "周末"},
+            query_slots={"scene": "周末"},
             top_k=3,
             embedding_mode=EmbeddingMode.INTEREST,
         )

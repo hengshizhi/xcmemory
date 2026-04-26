@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from typing import Optional, List, Tuple, Dict
 
 # 槽位定义
-SLOT_NAMES = ["time", "subject", "action", "object", "purpose", "result"]
+SLOT_NAMES = ["scene", "subject", "action", "object", "purpose", "result"]
 NUM_SLOTS = len(SLOT_NAMES)
 SLOT_DIM = 64  # 每个槽位64维
 
@@ -123,7 +123,7 @@ class InterestEncoder(nn.Module):
 
     def encode_query(
         self,
-        time: Optional[torch.Tensor] = None,
+        scene: Optional[torch.Tensor] = None,
         subject: Optional[torch.Tensor] = None,
         action: Optional[torch.Tensor] = None,
         object: Optional[torch.Tensor] = None,
@@ -131,12 +131,12 @@ class InterestEncoder(nn.Module):
     ) -> torch.Tensor:
         """编码部分查询
         Args:
-            time, subject, action, object, purpose: 各槽位的 token_ids，未知为 None
+            scene, subject, action, object, purpose: 各槽位的 token_ids，未知为 None
         Returns:
             [384] 查询向量
         """
         slot_values = {
-            "time": time,
+            "scene": scene,
             "subject": subject,
             "action": action,
             "object": object,
@@ -200,7 +200,7 @@ class InterestEncoder(nn.Module):
 
     def encode_query_with_ids(
         self,
-        time: Optional[torch.Tensor] = None,
+        scene: Optional[torch.Tensor] = None,
         subject: Optional[torch.Tensor] = None,
         action: Optional[torch.Tensor] = None,
         object: Optional[torch.Tensor] = None,
@@ -208,7 +208,7 @@ class InterestEncoder(nn.Module):
     ) -> torch.Tensor:
         """用 token_ids 编码查询"""
         slot_values = {
-            "time": time, "subject": subject, "action": action,
+            "scene": scene, "subject": subject, "action": action,
             "object": object, "purpose": purpose,
         }
 
@@ -229,7 +229,7 @@ class InterestEncoder(nn.Module):
 
     def encode_query_with_ids_slots(
         self,
-        time: Optional[torch.Tensor] = None,
+        scene: Optional[torch.Tensor] = None,
         subject: Optional[torch.Tensor] = None,
         action: Optional[torch.Tensor] = None,
         object: Optional[torch.Tensor] = None,
@@ -242,7 +242,7 @@ class InterestEncoder(nn.Module):
             (full_vector [384], slot_vectors Dict[slot_name, slot_vector [64]])
         """
         slot_values = {
-            "time": time, "subject": subject, "action": action,
+            "scene": scene, "subject": subject, "action": action,
             "object": object, "purpose": purpose,
         }
 
@@ -305,7 +305,7 @@ class QueryEncoder(nn.Module):
 
     def encode(
         self,
-        time: Optional[torch.Tensor] = None,
+        scene: Optional[torch.Tensor] = None,
         subject: Optional[torch.Tensor] = None,
         action: Optional[torch.Tensor] = None,
         object: Optional[torch.Tensor] = None,
@@ -314,7 +314,7 @@ class QueryEncoder(nn.Module):
     ) -> torch.Tensor:
         """编码查询句（原始嵌入，不过自注意力）"""
         slot_values = {
-            "time": time, "subject": subject, "action": action,
+            "scene": scene, "subject": subject, "action": action,
             "object": object, "purpose": purpose, "result": result,
         }
 

@@ -11,7 +11,7 @@
 所有记忆的 query_sentence 必须为 6 槽格式：
 
 ```
-<time><subject><action><object><purpose><result>
+<scene><subject><action><object><purpose><result>
 ```
 
 示例：`<平时><我><学习><Python><提升><成长>`
@@ -20,7 +20,7 @@
 
 | 类型 | 字段 | 说明 |
 |------|------|------|
-| 槽位字段 | `time`, `subject`, `action`, `object`, `purpose`, `result` | 从 query_sentence 解析 |
+| 槽位字段 | `scene`, `subject`, `action`, `object`, `purpose`, `result` | 从 query_sentence 解析 |
 | 元数据字段 | `id`, `content`, `lifecycle`, `created_at`, `updated_at` | 直接访问 |
 | 通配符 | `*` / `ALL` | 所有字段 |
 
@@ -52,7 +52,7 @@ SELECT <字段> FROM memories
 
 > **TIME / TOPK / LIMIT 按书写顺序执行**，例如 `TIME ... TOPK ... LIMIT ...` 表示先时间过滤、再匹配度排序、最后截断。
 
-**可用字段：** `*`、`id`、`content`、`time`、`subject`、`action`、`object`、`purpose`、`result`、`lifecycle`、`created_at`、`updated_at`
+**可用字段：** `*`、`id`、`content`、`scene`、`subject`、`action`、`object`、`purpose`、`result`、`lifecycle`、`created_at`、`updated_at`
 
 **条件操作符：** `=` / `==`（等于）、`!=`（不等于）、`<`、`>`、`<=`、`>=`、`LIKE`、`IN`
 
@@ -92,7 +92,7 @@ SELECT * FROM memories WHERE lifecycle < 604800   -- 短期记忆
 SELECT * FROM memories ORDER BY created_at DESC LIMIT 50
 ```
 
-**⚠️ WHERE 条件中的槽位字段（time/subject/action/object/purpose/result）**
+**⚠️ WHERE 条件中的槽位字段（scene/subject/action/object/purpose/result）**
 > 条件中的槽位字段**必须从 query_sentence 解析**，值是 `<...>` 中的原始字符串，不是字段名本身。
 > 正确：`WHERE subject='我'`（"我" 是 query_sentence 解析出来的值）
 > 错误：`WHERE subject='subject'`（误把槽位名当值）
@@ -195,7 +195,7 @@ SELECT * FROM memories WHERE [<槽位>=<值>[, <槽位>=<值>]...] SEARCH TOPK <
 - 槽位放在方括号 `[]` 内，多个槽位用逗号分隔（AND 关系）
 - `SEARCH` 关键字触发向量搜索
 - `TOPK <n>` 指定返回结果数量（默认5）
-- 支持槽位：`time`、`subject`、`action`、`object`、`purpose`、`result`
+- 支持槽位：`scene`、`subject`、`action`、`object`、`purpose`、`result`
 
 **示例：**
 
@@ -207,7 +207,7 @@ SELECT * FROM memories WHERE [subject='我'] SEARCH TOPK 5
 SELECT * FROM memories WHERE [subject='我', action='学习'] SEARCH TOPK 10
 
 -- 全六槽搜索
-SELECT * FROM memories WHERE [time='平时', subject='我', action='学', object='编程', purpose='喜欢', result='有收获'] SEARCH TOPK 5
+SELECT * FROM memories WHERE [scene='平时', subject='我', action='学', object='编程', purpose='喜欢', result='有收获'] SEARCH TOPK 5
 
 -- 搜索更多结果
 SELECT * FROM memories WHERE [purpose='锻炼身体'] SEARCH TOPK 20
@@ -616,7 +616,7 @@ SELECT * FROM memories WHERE [subject='我', action='学习', object='编程'] S
 SELECT * FROM memories WHERE [purpose='锻炼身体'] SEARCH TOPK 10 FULLSPACE
 
 -- 场景：查找特定时间的记忆
-SELECT * FROM memories WHERE [time='周末'] SEARCH TOPK 5
+SELECT * FROM memories WHERE [scene='周末'] SEARCH TOPK 5
 
 -- 场景：结合条件过滤
 SELECT * FROM memories WHERE [subject='我', action='学习'] SEARCH TOPK 10

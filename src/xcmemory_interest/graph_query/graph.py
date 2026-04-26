@@ -34,7 +34,7 @@ class MemoryGraph:
             vec_db: VecDBCRUD 实例（用于访问 slot_value_index）
         """
         self._vec_db = vec_db
-        self._slot_names = vec_db.SLOT_NAMES  # ["time", "subject", "action", "object", "purpose", "result"]
+        self._slot_names = vec_db.SLOT_NAMES  # ["scene", "subject", "action", "object", "purpose", "result"]
 
     # =========================================================================
     # 图构建（基于索引）
@@ -86,7 +86,7 @@ class MemoryGraph:
 
         # 提取该记忆的槽位值
         slot_values = {
-            "time": row["time_value"],
+            "scene": row["scene_value"],
             "subject": row["subject_value"],
             "action": row["action_value"],
             "object": row["object_value"],
@@ -246,7 +246,7 @@ class MemoryGraph:
             return []
 
         start_values = {
-            "time": row["time_value"],
+            "scene": row["scene_value"],
             "subject": row["subject_value"],
             "action": row["action_value"],
             "object": row["object_value"],
@@ -324,7 +324,7 @@ class MemoryGraph:
 
         # 提取槽位值
         values_a = {
-            "time": row_a["time_value"],
+            "scene": row_a["scene_value"],
             "subject": row_a["subject_value"],
             "action": row_a["action_value"],
             "object": row_a["object_value"],
@@ -332,7 +332,7 @@ class MemoryGraph:
             "result": row_a["result_value"],
         }
         values_b = {
-            "time": row_b["time_value"],
+            "scene": row_b["scene_value"],
             "subject": row_b["subject_value"],
             "action": row_b["action_value"],
             "object": row_b["object_value"],

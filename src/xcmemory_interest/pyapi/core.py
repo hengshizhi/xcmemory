@@ -39,7 +39,7 @@ from ..mql import Interpreter as MQLInterpreter, QueryResult as MQLResult
 class Memory:
     """记忆数据模型"""
     id: str
-    query_sentence: str           # "<时间><主体><动作><宾语><目的><结果>"
+    query_sentence: str           # "<场景><主体><动作><宾语><目的><结果>"
     query_embedding: np.ndarray    # 兴趣嵌入 [384]
     raw_embedding: np.ndarray      # 原始嵌入 [384]
     content: str                   # 记忆内容（可留空）
@@ -253,7 +253,7 @@ class MemorySystem:
 
     def _build_query_sentence(
         self,
-        time_word: str = None,
+        scene_word: str = None,
         subject: str = None,
         action: str = None,
         object: str = None,
@@ -261,10 +261,10 @@ class MemorySystem:
         result: str = None,
     ) -> str:
         """构建查询句"""
-        return f"<{time_word or ''}><{subject or ''}><{action or ''}><{object or ''}><{purpose or ''}><{result or ''}>"
+        return f"<{scene_word or ''}><{subject or ''}><{action or ''}><{object or ''}><{purpose or ''}><{result or ''}>"
 
-    def _extract_time_word(self, query_sentence: str) -> str:
-        """从查询句提取时间词"""
+    def _extract_scene_word(self, query_sentence: str) -> str:
+        """从查询句提取场景词"""
         parts = self._parse_query_sentence(query_sentence)
         return parts[0] if parts else ""
 
@@ -277,17 +277,17 @@ class MemorySystem:
         query_sentence: str,
         content: str = "",
         reference_duration: int = None,
-        time_word: str = None,
+        scene_word: str = None,
         created_at: datetime = None,
     ) -> str:
         """
         写入记忆
 
         Args:
-            query_sentence: 查询句 "<时间><主体><动作><宾语><目的><结果>"
+            query_sentence: 查询句 "<场景><主体><动作><宾语><目的><结果>"
             content: 记忆内容（可留空）
             reference_duration: 参考生命周期（秒），传给 LifecycleManager 决策用；None 时用默认 86400
-            time_word: 时间词（从查询句自动提取，可覆盖）
+            scene_word: 场景词（从查询句自动提取，可覆盖）
             created_at: 创建时间（默认当前时间）
 
         Returns:
@@ -301,13 +301,13 @@ class MemorySystem:
         # 构建查询句（如果只传了槽位参数）
         if "<" not in query_sentence:
             query_sentence = self._build_query_sentence(
-                time_word=time_word,
+                scene_word=scene_word,
                 subject=query_sentence,  # 第一个参数当作 subject
             )
 
         # 解析槽位
         parts = self._parse_query_sentence(query_sentence)
-        time_word_extracted = parts[0] or time_word or ""
+        scene_word_extracted = parts[0] or scene_word or ""
         created_at = created_at or datetime.now()
 
         # 相似度检查（仅在兴趣模式下）
@@ -317,7 +317,7 @@ class MemorySystem:
 
         # 构建槽位字典（用于 LifecycleManager）
         slot_dict = {
-            "time": parts[0],
+            "scene": parts[0],
             "subject": parts[1],
             "action": parts[2],
             "object": parts[3],
@@ -347,10 +347,10 @@ class MemorySystem:
         )
 
         # 写入时间索引
-        if time_word_extracted:
+        if scene_word_extracted:
             self._time_index.add(
                 memory_id=memory_id,
-                time_word=time_word_extracted,
+                time_word=scene_word_extracted,
                 created_at=created_at,
             )
 
@@ -633,7 +633,7 @@ class MemorySystem:
 
         Args:
             word: 要查找的词
-            slot: 槽位名（time/subject/action/object/purpose/result）
+            slot: 槽位名（scene/subject/action/object/purpose/result）
             top_k: 最大返回数量
 
         Returns:
@@ -802,7 +802,7 @@ class MemorySystem:
 
         parts = self._parse_query_sentence(query_sentence)
         slot_dict = {
-            "time": parts[0],
+            "scene": parts[0],
             "subject": parts[1],
             "action": parts[2],
             "object": parts[3],
@@ -849,7 +849,7 @@ class MemorySystem:
         """
         parts = self._parse_query_sentence(query_sentence)
         slot_dict = {
-            "time": parts[0],
+            "scene": parts[0],
             "subject": parts[1],
             "action": parts[2],
             "object": parts[3],
@@ -869,7 +869,7 @@ class MemorySystem:
         # 获取记忆的槽位
         mem_parts = self._parse_query_sentence(memory.query_sentence)
         mem_slots = {
-            "time": mem_parts[0],
+            "scene": mem_parts[0],
             "subject": mem_parts[1],
             "action": mem_parts[2],
             "object": mem_parts[3],

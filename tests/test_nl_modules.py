@@ -118,7 +118,7 @@ SELECT * FROM memories WHERE subject='测试' SEARCH TOPK 5
 </mql>
 
 <slots>
-{"time": "<平时>", "subject": "测试", "action": "<无>", "object": "<无>", "purpose": "<无>", "result": "<无>"}
+{"scene": "<平时>", "subject": "测试", "action": "<无>", "object": "<无>", "purpose": "<无>", "result": "<无>"}
 </slots>
 
 <confidence>
@@ -256,7 +256,7 @@ INSERT INTO memories VALUES ('<平时><绯绯><希望><星织><发展><恋人>',
 </mql>
 
 <slots>
-{"time": "<平时>", "subject": "绯绯", "action": "<希望>", "object": "星织", "purpose": "<发展>", "result": "<恋人>"}
+{"scene": "<平时>", "subject": "绯绯", "action": "<希望>", "object": "星织", "purpose": "<发展>", "result": "<恋人>"}
 </slots>
 
 <confidence>
@@ -288,7 +288,7 @@ SELECT * FROM memories WHERE object='Python' SEARCH TOPK 5
 </mql>
 
 <slots>
-{"time": "<无>", "subject": "<无>", "action": "<无>", "object": "Python", "purpose": "<无>", "result": "<无>"}
+{"scene": "<无>", "subject": "<无>", "action": "<无>", "object": "Python", "purpose": "<无>", "result": "<无>"}
 </slots>
 
 <confidence>
@@ -533,7 +533,7 @@ class TestSlotExtractor:
         from xcmemory_interest.nl.slot_extractor import SlotExtractor
 
         mock_response = """<slots>
-{"time": "<平时>", "subject": "我", "action": "<学>", "object": "Python", "purpose": "<无>", "result": "<有收获>"}
+{"scene": "<平时>", "subject": "我", "action": "<学>", "object": "Python", "purpose": "<无>", "result": "<有收获>"}
 </slots>
 
 <description>
@@ -562,16 +562,24 @@ class TestSlotExtractor:
 
         validator = SlotValidator()
 
-        # 有效的时间词
-        assert validator.validate_time("<平时>") is True
-        assert validator.validate_time("<少年期>") is True
+        # 有效的场景词
+        assert validator.validate_scene("<平时>") is True
+        assert validator.validate_scene("<少年期>") is True
+        # 时间场景
+        assert validator.validate_scene("<晚上>") is True
+        assert validator.validate_scene("<周末>") is True
+        assert validator.validate_scene("<假期>") is True
+        # 空间场景
+        assert validator.validate_scene("<家里>") is True
+        assert validator.validate_scene("<公司>") is True
+        assert validator.validate_scene("<学校>") is True
 
         # 有效动作
         assert validator.validate_action("<是>") is True
         assert validator.validate_action("<希望>") is True
 
         # 无效值
-        assert validator.validate_time("<随便什么>") is False
+        assert validator.validate_scene("<随便什么>") is False
 
 
 # ============================================================================
@@ -806,7 +814,7 @@ SELECT * FROM memories WHERE subject='我' SEARCH TOPK 5
 </mql>
 
 <slots>
-{"time": "<平时>", "subject": "我", "action": "<无>", "object": "<无>", "purpose": "<无>", "result": "<无>"}
+{"scene": "<平时>", "subject": "我", "action": "<无>", "object": "<无>", "purpose": "<无>", "result": "<无>"}
 </slots>
 
 <confidence>

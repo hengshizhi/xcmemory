@@ -29,7 +29,7 @@ class RerankConfig:
         if self.slot_weights is None:
             # 默认均匀权重
             self.slot_weights = {
-                "time": 1.0,
+                "scene": 1.0,
                 "subject": 1.0,
                 "action": 1.0,
                 "object": 1.0,
@@ -130,7 +130,7 @@ class ResultConditioningReranker(SubspaceReranker):
     带结果槽条件概率的重排序器
 
     核心思想：
-    - 结果槽（result）由前5槽（time/subject/action/object/purpose）条件决定
+    - 结果槽（result）由前5槽（scene/subject/action/object/purpose）条件决定
     - 查询中某些槽会"调制"结果槽的条件概率
 
     例如：
@@ -213,7 +213,7 @@ class DynamicReranker:
         if context.get("result_focused"):
             config = RerankConfig()
             config.slot_weights = {
-                "time": 0.5,
+                "scene": 0.5,
                 "subject": 0.8,
                 "action": 1.0,
                 "object": 0.8,
@@ -225,7 +225,7 @@ class DynamicReranker:
             config = RerankConfig()
             config.time_decay = 0.01
             config.slot_weights = {
-                "time": 2.0,
+                "scene": 2.0,
                 "subject": 1.0,
                 "action": 1.0,
                 "object": 1.0,
@@ -236,7 +236,7 @@ class DynamicReranker:
         elif context.get("entity_centric"):
             config = RerankConfig()
             config.slot_weights = {
-                "time": 0.5,
+                "scene": 0.5,
                 "subject": 2.0,
                 "action": 0.8,
                 "object": 2.0,

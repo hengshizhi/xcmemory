@@ -87,7 +87,7 @@ server.start()
 
 | 槽位 | 名称 | 说明 | 示例 |
 |------|------|------|------|
-| time | 时间词 | 动作发生的时间背景 | 平时、经常、偶尔 |
+| scene | 场景词 | 动作发生的场景背景（时间场景如平时、晚上、周末；空间场景如家里、公司、学校） | 平时、家里、周末 |
 | subject | 主体 | 执行动作的实体 | 我、他、我们 |
 | action | 动作 | 主要行为 | 学、看、玩 |
 | object | 宾语 | 动作的客体 | 书、游戏、实验 |
@@ -100,7 +100,7 @@ server.start()
 
 采用 **Chroma** 向量数据库，存储结构：
 
-- **6 个槽位子空间**（64 维/槽位）：`slot_time`, `slot_subject`, `slot_action`, `slot_object`, `slot_purpose`, `slot_result`
+- **6 个槽位子空间**（64 维/槽位）：`slot_scene`, `slot_subject`, `slot_action`, `slot_object`, `slot_purpose`, `slot_result`
 - **1 个全量空间**（384 维）：`full_vectors`
 
 ### 3.3 生命周期
@@ -132,7 +132,7 @@ DELETE FROM memories WHERE <条件>
 
 | 字段类型 | 可用字段 |
 |----------|----------|
-| 槽位字段 | `time`, `subject`, `action`, `object`, `purpose`, `result` |
+| 槽位字段 | `scene`, `subject`, `action`, `object`, `purpose`, `result` |
 | 元数据字段 | `id`, `content`, `lifecycle`, `created_at`, `updated_at` |
 | 通配符 | `*`（所有字段） |
 

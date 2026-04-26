@@ -309,7 +309,7 @@ class LifecycleManager:
         # 直接解析 query_sentence 得到字符串值
         from ..basic_crud.vec_db_crud import VecDBCRUD
         parts = VecDBCRUD._parse_query_sentence(accessed_memory.query_sentence)
-        slot_names = ["time", "subject", "action", "object", "purpose", "result"]
+        slot_names = ["scene", "subject", "action", "object", "purpose", "result"]
         query_slots_dict = {
             slot_names[i]: parts[i]
             for i in range(len(parts))
@@ -778,7 +778,7 @@ class LifecycleManager:
 
         # 重要性分数：各槽位向量 L2 范数之和
         total_score = 0.0
-        for slot in ["time", "subject", "action", "object", "purpose", "result"]:
+        for slot in ["scene", "subject", "action", "object", "purpose", "result"]:
             vec = attended_vecs.get(slot)
             if vec is not None:
                 total_score += float(np.linalg.norm(vec))
@@ -800,7 +800,7 @@ class LifecycleManager:
 
         # 重要性分数：各槽位向量 L2 范数之和
         total_score = 0.0
-        for slot in ["time", "subject", "action", "object", "purpose", "result"]:
+        for slot in ["scene", "subject", "action", "object", "purpose", "result"]:
             vec = attended_vecs.get(slot)
             if vec is not None:
                 total_score += float(np.linalg.norm(vec))
@@ -822,7 +822,7 @@ class LifecycleManager:
         """
         # 构建 QuerySlots
         slots = QuerySlots(
-            time=slot_dict.get("time"),
+            scene=slot_dict.get("scene"),
             subject=slot_dict.get("subject"),
             action=slot_dict.get("action"),
             object=slot_dict.get("object"),
@@ -830,7 +830,7 @@ class LifecycleManager:
             result=slot_dict.get("result"),
         )
         slot_values = {
-            "time": slots.time,
+            "scene": slots.scene,
             "subject": slots.subject,
             "action": slots.action,
             "object": slots.object,
@@ -839,7 +839,7 @@ class LifecycleManager:
 
         with torch.no_grad():
             _, slot_dict_out = self._vec_db.encoder.encode_query_with_ids_slots(
-                time=slot_values.get("time"),
+                scene=slot_values.get("scene"),
                 subject=slot_values.get("subject"),
                 action=slot_values.get("action"),
                 object=slot_values.get("object"),
@@ -866,7 +866,7 @@ class LifecycleManager:
         """
         slot_dict = slots.to_dict()
         slot_values = {
-            "time": slot_dict.get("time"),
+            "scene": slot_dict.get("scene"),
             "subject": slot_dict.get("subject"),
             "action": slot_dict.get("action"),
             "object": slot_dict.get("object"),
@@ -875,7 +875,7 @@ class LifecycleManager:
 
         with torch.no_grad():
             _, slot_dict_out = self._vec_db.encoder.encode_query_with_ids_slots(
-                time=slot_values.get("time"),
+                scene=slot_values.get("scene"),
                 subject=slot_values.get("subject"),
                 action=slot_values.get("action"),
                 object=slot_values.get("object"),

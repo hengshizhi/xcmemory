@@ -28,7 +28,7 @@ NL_TO_MQL_PROMPT = """# Task
 
 # MQL 语法（基础）
 SELECT * FROM memories WHERE [slot=value,...] [SEARCH TOPK n] [TIME year(...) AND month(...) AND day(...) AND clock(...)] [TOPK n] [LIMIT n]
-六槽格式：<time><subject><action><object><purpose><result>，缺槽用 <无> 占位
+六槽格式：<scene><subject><action><object><purpose><result>，缺槽用 <无> 占位
 
 # 结果数量
 {topk_hint}
@@ -106,11 +106,11 @@ TIME [year(Y [TO Y | *]) [AND month(M [TO M | *]) [AND day(D [TO D | *]) [AND cl
 4. **具体日期**："本月21号" → TIME day(...)
 
 ## 何时不用 TIME
-1. **time 槽位匹配**："平时的习惯"、"周末做的事" → 用 WHERE time='平时'（搜索 time 槽位值，不是 created_at 时间戳）
+1. **scene 槽位匹配**："平时的习惯"、"周末做的事"、"在家的情况" → 用 WHERE scene='平时'（搜索 scene 槽位值，不是 created_at 时间戳）
 2. **无时间意图**："关于Python的记忆" → 不需要 TIME
 
-## TIME 和 time 槽位的区别
-- **time 槽位**：记忆内容的时间标签（平时/深夜/早上/那天晚上等），用 WHERE time='平时' 匹配
+## TIME 和 scene 槽位的区别
+- **scene 槽位**：记忆内容的场景标签（时间场景如平时/深夜/早上/晚上/周末；空间场景如家里/公司/学校等），用 WHERE scene='平时' 匹配
 - **TIME 过滤**：记忆创建时间的时间戳过滤，用 TIME year(2024) 过滤 created_at
 
 ## TIME 示例
@@ -118,7 +118,7 @@ TIME [year(Y [TO Y | *]) [AND month(M [TO M | *]) [AND day(D [TO D | *]) [AND cl
 - "去年1-3月的事" → SELECT * FROM memories WHERE subject='{holder}' TIME year(2025) AND month(01 TO 03)
 - "晚上的记忆" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(18:00 TO 23:59)
 - "白天发生过什么" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(06:00 TO 18:00)
-- "平时晚上的习惯" → SELECT * FROM memories WHERE time='平时' AND subject='{holder}'（用 time 槽位，不用 TIME）
+- "平时晚上的习惯" → SELECT * FROM memories WHERE scene='平时' AND subject='{holder}'（用 scene 槽位，不用 TIME）
 - "昨天做了什么" → SELECT * FROM memories WHERE subject='{holder}' TIME year({current_year}) AND month({current_month}) AND day({prev_day})
 - "前天的事" → SELECT * FROM memories WHERE subject='{holder}' TIME year({current_year}) AND month({current_month}) AND day({prev2_day})
 
@@ -128,7 +128,9 @@ TIME/TOPK/LIMIT 按书写顺序执行：
 - `TOPK 10 TIME year(2024) LIMIT 5` → 先排序，再过滤，再截断
 
 # 槽位规则
-① time：<平时>(永久) | <少年期/童年>(永久) | <那天晚上/深夜/早上>(一天) | <YYYY-MM-DD>
+① scene：场景标签（时间场景+空间场景），只用预定义词：
+  - 时间场景：<平时>(永久) | <少年期/童年>(永久) | <那天晚上/深夜/早上/晚上/白天>(一天) | <周末/假期/本周早些时候>(一周) | <YYYY-MM-DD>
+  - 空间场景：<家里/公司/学校/户外/线上/路上>(一天)
 ② subject：执行或承受动作的角色。**代词映射**："我"/"我的"→'{holder}'，"你"→'你'，"他"→'他'
 ③ action（预定义）：<是><与><的><同意><拒绝><希望><遵循><发生于><发生><想><说><做>
 ④ object：action 的承受者
@@ -161,7 +163,7 @@ TIME/TOPK/LIMIT 按书写顺序执行：
 - "2024年的记忆" → SELECT * FROM memories WHERE subject='{holder}' TIME year(2024)
 - "去年1-3月发生的事" → SELECT * FROM memories WHERE subject='{holder}' TIME year(2025) AND month(01 TO 03)
 - "晚上的记忆" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(18:00 TO 23:59)
-- "平时晚上的习惯" → SELECT * FROM memories WHERE time='平时' AND subject='{holder}'（time 槽位匹配，非 TIME 过滤）
+- "平时晚上的习惯" → SELECT * FROM memories WHERE scene='平时' AND subject='{holder}'（scene 槽位匹配，非 TIME 过滤）
 - "我白天做过什么" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(06:00 TO 18:00)
 - "星织昨天做了什么" → SELECT * FROM memories WHERE subject='星织' TIME year({current_year}) AND month({current_month}) AND day({prev_day})
 - "昨天做了什么" → SELECT * FROM memories WHERE subject='{holder}' TIME year({current_year}) AND month({current_month}) AND day({prev_day})
@@ -196,7 +198,7 @@ TIME/TOPK/LIMIT 按书写顺序执行：
    ↑↑↑ 注意 WHERE 和 TIME 之间没有 AND！
 
 其他禁止语法：
-1. ❌ `WHERE time LIKE '2026-04%'` — 不要用 LIKE 做时间过滤！用 TIME 关键字：TIME year(2026) AND month(04)
+1. ❌ `WHERE scene LIKE '2026-04%'` — 不要用 LIKE 做时间过滤！用 TIME 关键字：TIME year(2026) AND month(04)
 2. ❌ `BETWEEN` — 不支持 WHERE year BETWEEN 2024 AND 2025，用 TIME year(2024 TO 2025) 替代
 3. ❌ `IN (...)` — 不支持 WHERE subject IN ('A','B')，用多条 SELECT 分号分隔替代
 4. ❌ `ORDER BY` — 不支持，用 TOPK n 按向量匹配度排序替代
@@ -207,7 +209,7 @@ TIME/TOPK/LIMIT 按书写顺序执行：
 # 输出格式（必须严格遵循）
 <analysis>意图+关键槽位+是否使用GRAPH及原因</analysis>
 <mql>生成的MQL语句（多条用分号分隔）</mql>
-<slots>{{"time":"","subject":"","action":"","object":"","purpose":"","result":""}}</slots>
+<slots>{{"scene":"","subject":"","action":"","object":"","purpose":"","result":""}}</slots>
 <confidence>0.0-1.0</confidence>
 
 注意：

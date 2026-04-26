@@ -23,7 +23,7 @@ from .model import InterestEncoder, QueryEncoder, SLOT_NAMES, SLOT_DIM
 @dataclass
 class QuerySlots:
     """查询槽位数据类"""
-    time: Optional[torch.Tensor] = None
+    scene: Optional[torch.Tensor] = None
     subject: Optional[torch.Tensor] = None
     action: Optional[torch.Tensor] = None
     object: Optional[torch.Tensor] = None
@@ -32,7 +32,7 @@ class QuerySlots:
 
     def to_dict(self) -> Dict[str, Optional[torch.Tensor]]:
         return {
-            "time": self.time,
+            "scene": self.scene,
             "subject": self.subject,
             "action": self.action,
             "object": self.object,
@@ -108,7 +108,7 @@ class QueryEncoderPipeline:
             else:
                 # 兴趣嵌入：经过自注意力处理
                 query_slots = {
-                    "time": slot_dict.get("time"),
+                    "scene": slot_dict.get("scene"),
                     "subject": slot_dict.get("subject"),
                     "action": slot_dict.get("action"),
                     "object": slot_dict.get("object"),
@@ -163,17 +163,17 @@ class QueryEncoderPipeline:
 
             # 经注意力处理后的向量
             query_slots = {
-                "time": slot_dict.get("time"),
+                "scene": slot_dict.get("scene"),
                 "subject": slot_dict.get("subject"),
                 "action": slot_dict.get("action"),
                 "object": slot_dict.get("object"),
                 "purpose": slot_dict.get("purpose"),
             }
             # 需要用特殊方式获取中间结果，这里用 encode_query_with_ids
-            # 它的输出顺序是 time, subject, action, object, purpose, result (6个槽位)
+            # 它的输出顺序是 scene, subject, action, object, purpose, result (6个槽位)
             # 但 encode_query 只处理前5个槽位
             full_query_slots = {
-                "time": slot_dict.get("time"),
+                "scene": slot_dict.get("scene"),
                 "subject": slot_dict.get("subject"),
                 "action": slot_dict.get("action"),
                 "object": slot_dict.get("object"),
@@ -339,7 +339,7 @@ class SlotTokenizer:
 
     def encode_slots(
         self,
-        time: Optional[str] = None,
+        scene: Optional[str] = None,
         subject: Optional[str] = None,
         action: Optional[str] = None,
         object: Optional[str] = None,
@@ -348,7 +348,7 @@ class SlotTokenizer:
     ) -> QuerySlots:
         """编码所有槽位的文本"""
         return QuerySlots(
-            time=self.encode_slot(time, "time") if time else None,
+            scene=self.encode_slot(scene, "scene") if scene else None,
             subject=self.encode_slot(subject, "subject") if subject else None,
             action=self.encode_slot(action, "action") if action else None,
             object=self.encode_slot(object, "object") if object else None,
@@ -397,7 +397,7 @@ def parse_and_encode_query(
     解析并编码查询
 
     Args:
-        query_texts: {"time": "...", "subject": "...", ...}
+        query_texts: {"scene": "...", "subject": "...", ...}
         encoder: 已训练的 InterestEncoder
 
     Returns:

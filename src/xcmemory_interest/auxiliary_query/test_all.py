@@ -507,7 +507,7 @@ def test_slot_index(tmp_dir):
     # 准备测试数据
     memory_id = "mem_test_1"
     slot_vectors = {
-        "time": np.random.randn(64).astype(np.float32),
+        "scene": np.random.randn(64).astype(np.float32),
         "subject": np.random.randn(64).astype(np.float32),
         "action": np.random.randn(64).astype(np.float32),
         "object": np.random.randn(64).astype(np.float32),
@@ -515,7 +515,7 @@ def test_slot_index(tmp_dir):
         "result": np.random.randn(64).astype(np.float32),
     }
     slot_values = {
-        "time": "平时",
+        "scene": "平时",
         "subject": "我",
         "action": "学",
         "object": "编程",
@@ -631,7 +631,7 @@ def test_integration(tmp_dir):
     memory_id = "mem_integration_1"
 
     slot_vectors = {
-        "time": np.random.randn(64).astype(np.float32),
+        "scene": np.random.randn(64).astype(np.float32),
         "subject": np.random.randn(64).astype(np.float32),
         "action": np.random.randn(64).astype(np.float32),
         "object": np.random.randn(64).astype(np.float32),
@@ -639,7 +639,7 @@ def test_integration(tmp_dir):
         "result": np.random.randn(64).astype(np.float32),
     }
     slot_values = {
-        "time": "平时",
+        "scene": "平时",
         "subject": "我",
         "action": "学习",
         "object": "Python",

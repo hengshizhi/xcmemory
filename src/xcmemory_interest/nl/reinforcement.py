@@ -380,7 +380,7 @@ class ReinforcementMixIn:
         if self._lifecycle_mgr is not None:
             decided_lifecycle = self._lifecycle_mgr.decide_new_lifecycle(
                 query_slots={k: v for k, v in zip(
-                    ["time", "subject", "action", "object", "purpose", "result"],
+                    ["scene", "subject", "action", "object", "purpose", "result"],
                     parts
                 ) if v},
                 reference_duration=reference_duration if reference_duration is not None else 86400,

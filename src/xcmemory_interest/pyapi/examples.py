@@ -3,7 +3,7 @@ Starlight Memory System - PyAPI Usage Examples
 ================================================
 
 Query sentence format:
-    "<time><subject><action><object><purpose><result>"
+    "<scene><subject><action><object><purpose><result>"
 
 Usage:
     python examples.py

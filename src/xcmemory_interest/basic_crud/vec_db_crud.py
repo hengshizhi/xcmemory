@@ -5,7 +5,7 @@
 同时保留完整 384 维向量 Collection 用于全空间搜索。
 
 架构：
-├── 6 个槽位 Collection（各 64 维）：slot_time / slot_subject / slot_action / slot_object / slot_purpose / slot_result
+├── 6 个槽位 Collection（各 64 维）：slot_scene / slot_subject / slot_action / slot_object / slot_purpose / slot_result
 ├── 1 个全量 Collection（384 维）：full_vectors
 └── 1 个 KV 数据库（SQLite）：Memory 对象存储
 
@@ -44,7 +44,7 @@ from ..embedding_coder import InterestEncoder, QueryEncoderPipeline, QuerySlots,
 class Memory:
     """记忆数据模型"""
     id: str
-    query_sentence: str           # "<时间><主体><动作><宾语><目的><结果>"
+    query_sentence: str           # "<场景><主体><动作><宾语><目的><结果>"
     query_embedding: np.ndarray   # 兴趣嵌入 [384]
     raw_embedding: np.ndarray     # 原始嵌入 [384]
     content: str
@@ -120,7 +120,7 @@ class VecDBCRUD:
     - 1 个 KV 数据库 (SQLite): Memory 对象
     """
 
-    SLOT_NAMES = SLOT_NAMES      # ["time", "subject", "action", "object", "purpose", "result"]
+    SLOT_NAMES = SLOT_NAMES      # ["scene", "subject", "action", "object", "purpose", "result"]
     SLOT_DIM = SLOT_DIM          # 64
     FULL_DIM = SLOT_DIM * len(SLOT_NAMES)  # 384
 
@@ -225,7 +225,7 @@ class VecDBCRUD:
             CREATE TABLE IF NOT EXISTS slot_value_index (
                 memory_id TEXT PRIMARY KEY,
                 content TEXT,
-                time_value TEXT,
+                scene_value TEXT,
                 subject_value TEXT,
                 action_value TEXT,
                 object_value TEXT,
@@ -330,13 +330,13 @@ class VecDBCRUD:
         cur.execute("""
             INSERT OR REPLACE INTO slot_value_index (
                 memory_id, content,
-                time_value, subject_value, action_value, object_value,
+                scene_value, subject_value, action_value, object_value,
                 purpose_value, result_value, created_at, lifecycle
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             memory_id,
             content,
-            slot_values.get("time", ""),
+            slot_values.get("scene", ""),
             slot_values.get("subject", ""),
             slot_values.get("action", ""),
             slot_values.get("object", ""),
@@ -364,7 +364,7 @@ class VecDBCRUD:
 
         Args:
             word: 要查找的词
-            slot: 槽位名（time/subject/action/object/purpose/result）
+            slot: 槽位名（scene/subject/action/object/purpose/result）
             top_k: 最大返回数量
 
         Returns:
@@ -471,7 +471,7 @@ class VecDBCRUD:
 
     @staticmethod
     def _parse_query_sentence(query_sentence: str) -> List[str]:
-        """解析 '<时间><主体><动作><宾语><目的><结果>' → [6个字符串]"""
+        """解析 '<场景><主体><动作><宾语><目的><结果>' → [6个字符串]"""
         parts, current, in_bracket = [], "", False
         for ch in query_sentence:
             if ch == "<":
@@ -495,7 +495,7 @@ class VecDBCRUD:
     def _slots_from_sentence(self, query_sentence: str) -> QuerySlots:
         parts = self._parse_query_sentence(query_sentence)
         return QuerySlots(
-            time=self._text_to_ids(parts[0]),
+            scene=self._text_to_ids(parts[0]),
             subject=self._text_to_ids(parts[1]),
             action=self._text_to_ids(parts[2]),
             object=self._text_to_ids(parts[3]),

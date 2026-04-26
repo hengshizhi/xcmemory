@@ -320,7 +320,7 @@ class BasicCRUD:
                 current += char
 
         if len(parts) == 6:
-            slot_names = ["time", "subject", "action", "object", "purpose", "result"]
+            slot_names = ["scene", "subject", "action", "object", "purpose", "result"]
             for i, slot_name in enumerate(slot_names):
                 metadata[slot_name] = parts[i]  # 存储槽位字符串值
 
@@ -384,7 +384,7 @@ class BasicCRUD:
         if len(parts) != 6:
             raise ValueError(f"查询句必须包含6个槽位，得到 {len(parts)} 个: {query_sentence}")
 
-        time_val, subject, action, obj, purpose, result = parts
+        scene_val, subject, action, obj, purpose, result = parts
 
         # 转换为 token_ids（使用简单的字符编码）
         def text_to_ids(text: str) -> torch.Tensor:
@@ -396,7 +396,7 @@ class BasicCRUD:
             return ids
 
         return QuerySlots(
-            time=text_to_ids(time_val),
+            scene=text_to_ids(scene_val),
             subject=text_to_ids(subject),
             action=text_to_ids(action),
             object=text_to_ids(obj),
@@ -646,7 +646,7 @@ class BasicCRUD:
 
         # 收集所有有值的槽位
         active_slots = {}
-        for slot_name in ["time", "subject", "action", "object", "purpose", "result"]:
+        for slot_name in ["scene", "subject", "action", "object", "purpose", "result"]:
             if slot_name in slot_vecs and np.linalg.norm(slot_vecs[slot_name]) > 0:
                 active_slots[slot_name] = slot_vecs[slot_name]
 
@@ -853,7 +853,7 @@ class BasicCRUD:
         解析查询槽位字典为 QuerySlots
 
         Args:
-            query_slots: {"time": "平时", "subject": "我", ...}
+            query_slots: {"scene": "平时", "subject": "我", ...}
 
         Returns:
             QuerySlots 对象
@@ -865,14 +865,14 @@ class BasicCRUD:
             return ids
 
         slots_dict = {}
-        for slot_name in ["time", "subject", "action", "object", "purpose", "result"]:
+        for slot_name in ["scene", "subject", "action", "object", "purpose", "result"]:
             value = query_slots.get(slot_name)
             if value is not None:
                 slots_dict[slot_name] = text_to_ids(value)
 
         # 构建 QuerySlots
         return QuerySlots(
-            time=slots_dict.get("time"),
+            scene=slots_dict.get("scene"),
             subject=slots_dict.get("subject"),
             action=slots_dict.get("action"),
             object=slots_dict.get("object"),

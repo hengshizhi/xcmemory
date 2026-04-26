@@ -3,7 +3,7 @@
 """
 
 # 槽位定义
-SLOT_NAMES = ["time", "subject", "action", "object", "purpose", "result"]
+SLOT_NAMES = ["scene", "subject", "action", "object", "purpose", "result"]
 NUM_SLOTS = len(SLOT_NAMES)
 SLOT_DIM = 64
 

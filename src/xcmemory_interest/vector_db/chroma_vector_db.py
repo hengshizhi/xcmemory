@@ -62,7 +62,7 @@ class ChromaVectorDB:
         )
 
         # 槽位定义
-        self.slot_names = ["time", "subject", "action", "object", "purpose", "result"]
+        self.slot_names = ["scene", "subject", "action", "object", "purpose", "result"]
         self.slot_dim = 64
         self.vector_dim = 384  # 6 * 64
 

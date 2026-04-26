@@ -152,7 +152,7 @@ class Interpreter:
             raise ExecutionError(f"Unknown AST type: {type(ast)}")
 
     # 六个标准槽位
-    _SLOTS = ("time", "subject", "action", "object", "purpose", "result")
+    _SLOTS = ("scene", "subject", "action", "object", "purpose", "result")
 
     def _any_slot_contains(self, memory: Dict, keyword: str) -> bool:
         """检查记忆任意槽位是否包含 keyword（子串匹配）"""
@@ -185,7 +185,7 @@ class Interpreter:
             elif in_bracket:
                 current += ch
 
-        slot_names = ["time", "subject", "action", "object", "purpose", "result"]
+        slot_names = ["scene", "subject", "action", "object", "purpose", "result"]
         result = {}
         for i, name in enumerate(slot_names):
             if i < len(parts):
@@ -211,7 +211,7 @@ class Interpreter:
             return self._any_slot_contains(memory, condition.value)
 
         # 获取字段值
-        if field in ["time", "subject", "action", "object", "purpose", "result"]:
+        if field in ["scene", "subject", "action", "object", "purpose", "result"]:
             # 槽位值直接存在 memory dict 中（如 memory["subject"]）
             field_value = memory.get(field, "")
         else:

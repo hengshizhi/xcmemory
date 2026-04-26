@@ -19,7 +19,7 @@ def test_query_slots():
     print("=== 测试 QuerySlots ===")
 
     slots = QuerySlots(
-        time=torch.tensor([[1, 2, 3]]),
+        scene=torch.tensor([[1, 2, 3]]),
         subject=torch.tensor([[4, 5]]),
         action=None,
         object=torch.tensor([[6]]),
@@ -29,7 +29,7 @@ def test_query_slots():
 
     print(f"已填充槽位: {slots.get_filled_slots()}")
     print(f"未填充槽位: {slots.get_empty_slots()}")
-    print(f"槽位数据: time={slots.time.shape}, subject={slots.subject.shape}")
+    print(f"槽位数据: scene={slots.scene.shape}, subject={slots.subject.shape}")
     print()
 
 
@@ -140,7 +140,7 @@ def test_query_vector_consistency():
 
     # 模拟查询编码（使用相同的嵌入）
     slots = QuerySlots(
-        time=torch.tensor([memory_ids[0]]),
+        scene=torch.tensor([memory_ids[0]]),
         subject=torch.tensor([memory_ids[1]]),
         action=torch.tensor([memory_ids[2]]),
         object=torch.tensor([memory_ids[3]]),
@@ -155,7 +155,7 @@ def test_query_vector_consistency():
 
     # 不同内容
     diff_slots = QuerySlots(
-        time=torch.tensor([[100, 101]]),
+        scene=torch.tensor([[100, 101]]),
         subject=torch.tensor([[200, 201]]),
     )
     diff_vec = pipeline.encode(diff_slots, use_raw=True, normalize=True)

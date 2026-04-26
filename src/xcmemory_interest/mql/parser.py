@@ -25,7 +25,7 @@ MQL - Memory Query Language 语法分析器
 - REVOKE permission ON system FROM user
 - GENERATE KEY FOR user
 
-槽位字段：time, subject, action, object, purpose, result
+槽位字段：scene, subject, action, object, purpose, result
 元数据字段：id, content, lifecycle, created_at, updated_at
 """
 
@@ -106,7 +106,7 @@ class SelectStatement(ASTNode):
 @dataclass
 class InsertStatement(ASTNode):
     """INSERT 语句"""
-    query_sentence: str  # 格式: <time><subject><action><object><purpose><result>
+    query_sentence: str  # 格式: <scene><subject><action><object><purpose><result>
     content: str = ""
     lifecycle: Optional[int] = None  # 已废弃，请使用 reference_duration
     reference_duration: Optional[int] = None  # 参考生命周期，由 LifecycleManager 决策（None=用默认值 86400）
@@ -167,7 +167,7 @@ class DefineStatement(ASTNode):
 class Parser:
     """SQL 风格解析器"""
 
-    SLOT_FIELDS = {"time", "subject", "action", "object", "purpose", "result"}
+    SLOT_FIELDS = {"scene", "subject", "action", "object", "purpose", "result"}
     META_FIELDS = {"id", "content", "lifecycle", "created_at", "updated_at"}
     ALL_FIELDS = SLOT_FIELDS | META_FIELDS
 

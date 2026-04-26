@@ -9,9 +9,13 @@ import json
 from openai import AsyncClient
 
 
-# 预定义时间词
-PREDEFINED_TIME_WORDS = [
-    "平时", "少年期", "童年", "那天晚上", "深夜", "早上", "本周早些时候"
+# 预定义场景词（时间场景 + 空间场景）
+PREDEFINED_SCENE_WORDS = [
+    # 时间场景
+    "平时", "少年期", "童年", "那天晚上", "深夜", "早上", "晚上", "白天",
+    "周末", "假期", "本周早些时候",
+    # 空间场景
+    "家里", "公司", "学校", "户外", "线上", "路上",
 ]
 
 # 预定义动词
@@ -20,15 +24,29 @@ PREDEFINED_ACTIONS = [
     "发生于", "发生", "想", "说", "做"
 ]
 
-# lifecycle 映射
+# lifecycle 映射（scene 词 → 基础 lifecycle；意图识别可覆盖）
 LIFECYCLE_MAP = {
+    # 时间场景 - 永久
     "平时": 999999,
     "少年期": 999999,
     "童年": 999999,
+    # 时间场景 - 一周
     "本周早些时候": 604800,
+    "周末": 604800,
+    "假期": 604800,
+    # 时间场景 - 一天
     "那天晚上": 86400,
     "深夜": 86400,
     "早上": 86400,
+    "晚上": 86400,
+    "白天": 86400,
+    # 空间场景 - 默认一天（由意图识别根据内容调整）
+    "家里": 86400,
+    "公司": 86400,
+    "学校": 86400,
+    "户外": 86400,
+    "线上": 86400,
+    "路上": 86400,
 }
 
 # 默认 lifecycle
@@ -41,7 +59,9 @@ NL_TO_SLOTS_PROMPT = """
 
 # 6 槽定义
 - subject: 主体 - 谁是主角？
-- time: 时间 - 只用预定义时间词之一：<平时>/<少年期>/<童年>/<那天晚上>/<深夜>/<早上>/<本周早些时候>/<YYYY-MM-DD>
+- scene: 场景 - 记忆发生的场景，包括时间场景和空间场景。只用预定义场景词之一：
+  - 时间场景：<平时>/<少年期>/<童年>/<那天晚上>/<深夜>/<早上>/<晚上>/<白天>/<周末>/<假期>/<本周早些时候>/<YYYY-MM-DD>
+  - 空间场景：<家里>/<公司>/<学校>/<户外>/<线上>/<路上>
 - action: 动作 - 严格使用预定义动词：<是>/<与>/<的>/<同意>/<拒绝>/<希望>/<遵循>/<发生于>/<发生>/<想>/<说>/<做>
 - object: 宾语 - action 的直接承受者
 - purpose: 目的/原因/条件
@@ -51,31 +71,43 @@ NL_TO_SLOTS_PROMPT = """
 - 六槽必须等长，缺槽用 <无> 占位
 - 只提取明确提到的信息，不过度推断
 - subject 默认为"我"如果未指明
-- lifecycle 推断：<平时>/<少年期>/<童年> → 999999；<本周早些时候> → 604800；<那天晚上>/<深夜>/<早上> → 86400
+- lifecycle 推断（由 scene 词决定基础值，意图识别可覆盖）：
+  - <平时>/<少年期>/<童年> → 999999（永久）
+  - <本周早些时候>/<周末>/<假期> → 604800（一周）
+  - <那天晚上>/<深夜>/<早上>/<晚上>/<白天>/<家里>/<公司>/<学校>/<户外>/<线上>/<路上> → 86400（一天）
 - 单一事实：一条记忆只表达一个独立事实
 - description 不重复六槽已有信息
-- time 槽必须是单一时间词，不能塞入其他信息
+- scene 槽必须是单一场景词，不能塞入其他信息
+- 当文本同时暗示时间和空间时，优先选最突出的那个场景维度填入 scene 槽
 
 # 六槽填充示例
 1. "星织是女性"
-   - time=<平时>, subject=<星织>, action=<是>, object=<女性>, purpose=<无>, result=<无>
+   - scene=<平时>, subject=<星织>, action=<是>, object=<女性>, purpose=<无>, result=<无>
    - description: "星织是女性"
 
 2. "绯绯希望星织发展成恋人关系"
-   - time=<平时>, subject=<绯绯>, action=<希望>, object=<星织>, purpose=<发展>, result=<恋人>
+   - scene=<平时>, subject=<绯绯>, action=<希望>, object=<星织>, purpose=<发展>, result=<恋人>
    - description: "绯绯希望星织发展成恋人关系"
 
 3. "星织同意与绯绯发展恋人关系，但要求慢慢来"
-   - time=<深夜>, subject=<星织>, action=<同意>, object=<绯绯>, purpose=<发展恋人关系>, result=<慢慢来>
+   - scene=<深夜>, subject=<星织>, action=<同意>, object=<绯绯>, purpose=<发展恋人关系>, result=<慢慢来>
    - description: "星织同意与绯绯发展恋人关系，但要求慢慢来"
 
 4. "早上哥哥醒来，星织还在睡"
-   - time=<早上>, subject=<哥哥>, action=<醒来>, object=<星织还在睡>, purpose=<无>, result=<无>
+   - scene=<早上>, subject=<哥哥>, action=<醒来>, object=<星织还在睡>, purpose=<无>, result=<无>
    - description: "早上哥哥醒来时星织还在睡"
+
+5. "我在家里喜欢看书"
+   - scene=<家里>, subject=<我>, action=<想>, object=<看书>, purpose=<无>, result=<无>
+   - description: "在家喜欢看书"
+
+6. "周末去户外骑自行车"
+   - scene=<周末>, subject=<我>, action=<做>, object=<骑自行车>, purpose=<无>, result=<无>
+   - description: "周末去户外骑自行车"
 
 # 输出格式
 <slots>
-{{"time": "", "subject": "", "action": "", "object": "", "purpose": "", "result": ""}}
+{{"scene": "", "subject": "", "action": "", "object": "", "purpose": "", "result": ""}}
 </slots>
 
 <description>
@@ -105,7 +137,7 @@ class SlotExtractor:
         result = await extractor.extract("星织同意与绯绯发展恋人关系，但要求慢慢来")
         # result = {
         #     "slots": {
-        #         "time": "<深夜>",
+        #         "scene": "<深夜>",
         #         "subject": "<星织>",
         #         "action": "<同意>",
         #         "object": "<绯绯>",
@@ -135,7 +167,7 @@ class SlotExtractor:
 
         Returns:
             包含以下键的字典:
-            - slots: 6槽字典，键为 time/subject/action/object/purpose/result
+            - slots: 6槽字典，键为 scene/subject/action/object/purpose/result
             - description: 整理后的记忆内容摘要
             - lifecycle: 推断的 lifecycle 数值
         """
@@ -176,7 +208,7 @@ class SlotExtractor:
         slots_str = self._extract_tag(text, "slots")
         if not slots_str:
             return {
-                "time": "",
+                "scene": "",
                 "subject": "",
                 "action": "",
                 "object": "",
@@ -206,7 +238,7 @@ class SlotExtractor:
             解析后的 slots 字典
         """
         result = {
-            "time": "",
+            "scene": "",
             "subject": "",
             "action": "",
             "object": "",
@@ -264,10 +296,10 @@ class SlotExtractor:
             except ValueError:
                 pass
 
-        # 从 time 槽推断
-        time_value = slots.get("time", "").strip("<>")
-        if time_value in LIFECYCLE_MAP:
-            return LIFECYCLE_MAP[time_value]
+        # 从 scene 槽推断
+        scene_value = slots.get("scene", "").strip("<>")
+        if scene_value in LIFECYCLE_MAP:
+            return LIFECYCLE_MAP[scene_value]
 
         return DEFAULT_LIFECYCLE
 
@@ -292,7 +324,7 @@ class SlotExtractor:
             normalized[key] = value
 
         # 填充缺失的槽为 <无>
-        for key in ["time", "subject", "action", "object", "purpose", "result"]:
+        for key in ["scene", "subject", "action", "object", "purpose", "result"]:
             if key not in normalized or not normalized[key]:
                 normalized[key] = "<无>"
 
@@ -319,14 +351,14 @@ class SlotValidator:
         Returns:
             (是否合法, 错误信息)
         """
-        required_keys = ["time", "subject", "action", "object", "purpose", "result"]
+        required_keys = ["scene", "subject", "action", "object", "purpose", "result"]
         for key in required_keys:
             if key not in slots:
                 return False, f"缺少必需槽位: {key}"
 
-        time_value = slots.get("time", "").strip("<>")
-        if time_value and not SlotValidator.validate_time(f"<{time_value}>"):
-            return False, f"非法的时间词: {time_value}"
+        scene_value = slots.get("scene", "").strip("<>")
+        if scene_value and not SlotValidator.validate_scene(f"<{scene_value}>"):
+            return False, f"非法的场景词: {scene_value}"
 
         action_value = slots.get("action", "").strip("<>")
         if action_value and not SlotValidator.validate_action(f"<{action_value}>"):
@@ -336,18 +368,18 @@ class SlotValidator:
         return True, ""
 
     @staticmethod
-    def validate_time(time_str: str) -> bool:
+    def validate_scene(scene_str: str) -> bool:
         """
-        验证时间词是否合法
+        验证场景词是否合法
 
         Args:
-            time_str: 时间字符串，例如 "<平时>" 或 "平时"
+            scene_str: 场景字符串，例如 "<平时>" 或 "平时"
 
         Returns:
             是否合法
         """
-        value = time_str.strip("<>")
-        return value in PREDEFINED_TIME_WORDS or re.match(r"^\d{4}-\d{2}-\d{2}$", value) is not None
+        value = scene_str.strip("<>")
+        return value in PREDEFINED_SCENE_WORDS or re.match(r"^\d{4}-\d{2}-\d{2}$", value) is not None
 
     @staticmethod
     def validate_action(action_str: str) -> bool:
@@ -375,7 +407,7 @@ def slots_to_query_sentence(slots: dict) -> str:
         合并后的 query_sentence 字符串
     """
     return (
-        f"{slots.get('time', '<无>')}"
+        f"{slots.get('scene', '<无>')}"
         f"{slots.get('subject', '<无>')}"
         f"{slots.get('action', '<无>')}"
         f"{slots.get('object', '<无>')}"

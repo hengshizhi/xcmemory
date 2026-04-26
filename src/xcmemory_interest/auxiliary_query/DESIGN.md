@@ -895,8 +895,8 @@ class SlotIndex:
 
         Args:
             memory_id: 记忆 ID
-            slot_vectors: 各槽位向量，如 {"time": [64维], "subject": [64维], ...}
-            slot_values: 各槽位字符串值，如 {"time": "平时", "subject": "我", ...}
+            slot_vectors: 各槽位向量，如 {"scene": [64维], "subject": [64维], ...}
+            slot_values: 各槽位字符串值，如 {"scene": "平时", "subject": "我", ...}
         """
 
     def remove(self, memory_id: str):
@@ -913,7 +913,7 @@ class SlotIndex:
 
         Args:
             word: 要查找的词
-            slot: 槽位名（time/subject/action/object/purpose/result）
+            slot: 槽位名（scene/subject/action/object/purpose/result）
             top_k: 返回数量
 
         Returns:

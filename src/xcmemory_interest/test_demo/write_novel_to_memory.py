@@ -168,7 +168,7 @@ def main():
         results = crud.search_subspace(q["slots"], top_k=3)
         for r in results:
             m = r.metadata
-            print(f"  - <{m.get('time', '')}><{m.get('subject', '')}><{m.get('action', '')}><{m.get('object', '')}><{m.get('purpose', '')}><{m.get('result', '')}>")
+            print(f"  - <{m.get('scene', '')}><{m.get('subject', '')}><{m.get('action', '')}><{m.get('object', '')}><{m.get('purpose', '')}><{m.get('result', '')}>")
             print(f"    distance={r.distance:.4f}, match_count={r.match_count}")
 
             # 获取完整记忆内容

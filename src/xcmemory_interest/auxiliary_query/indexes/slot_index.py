@@ -13,7 +13,7 @@ from ..storage.kv_db import KVDatabase
 
 
 # 槽位名称列表
-SLOT_NAMES = ["time", "subject", "action", "object", "purpose", "result"]
+SLOT_NAMES = ["scene", "subject", "action", "object", "purpose", "result"]
 SLOT_DIM = 64
 
 
@@ -25,7 +25,7 @@ class SlotIndex:
 
     索引结构：
         6 个 Chroma Collection（各 64 维）：
-            slot_time, slot_subject, slot_action,
+            slot_scene, slot_subject, slot_action,
             slot_object, slot_purpose, slot_result
 
         每条记录包含：
@@ -75,7 +75,7 @@ class SlotIndex:
             "slot_metadata",
             {
                 "memory_id": "TEXT PRIMARY KEY",
-                "slot_time": "TEXT",
+                "slot_scene": "TEXT",
                 "slot_subject": "TEXT",
                 "slot_action": "TEXT",
                 "slot_object": "TEXT",
@@ -96,8 +96,8 @@ class SlotIndex:
 
         Args:
             memory_id: 记忆 ID
-            slot_vectors: 各槽位向量，如 {"time": [64维], "subject": [64维], ...}
-            slot_values: 各槽位字符串值，如 {"time": "平时", "subject": "我", ...}
+            slot_vectors: 各槽位向量，如 {"scene": [64维], "subject": [64维], ...}
+            slot_values: 各槽位字符串值，如 {"scene": "平时", "subject": "我", ...}
         """
         # 写入各槽位 Collection
         for slot_name in SLOT_NAMES:
@@ -151,7 +151,7 @@ class SlotIndex:
 
         Args:
             word: 要查找的词
-            slot: 槽位名（time/subject/action/object/purpose/result）
+            slot: 槽位名（scene/subject/action/object/purpose/result）
             top_k: 返回数量
 
         Returns:

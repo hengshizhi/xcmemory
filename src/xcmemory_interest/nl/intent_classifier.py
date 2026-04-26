@@ -43,7 +43,8 @@ INTENT_CLASSIFY_PROMPT = """# Task
 ## 2. 拆解原则
 - 一句话可能同时包含写入和查询意图，需全部拆出
 - 拆出的陈述句应**尽量契合六槽位**的表达能力：
-  - <time><subject><action><object><purpose><result>
+  - <scene><subject><action><object><purpose><result>
+  - scene 槽包含时间场景（平时/晚上/周末/假期/早上/深夜等）和空间场景（家里/公司/学校/户外/线上/路上等）
   - 两个对象之间的关系用 subject-action-object 表达
   - 表达目的用 purpose 槽位
   - 结果/补充用 result 槽位
