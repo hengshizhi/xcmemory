@@ -218,6 +218,11 @@ class VecDBCRUD:
                 extra TEXT NOT NULL DEFAULT '{}'
             )
         """)
+        # 迁移：旧数据库缺少 extra 列时自动补上
+        try:
+            cur.execute("ALTER TABLE memories ADD COLUMN extra TEXT NOT NULL DEFAULT '{}'")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
         cur.execute("CREATE INDEX IF NOT EXISTS idx_lifecycle ON memories(lifecycle)")
 
         # 槽位值反向索引表：支持"哪个槽位有哪个值"的查询
@@ -235,6 +240,11 @@ class VecDBCRUD:
                 lifecycle INTEGER
             )
         """)
+        # 迁移：旧表 time_value → scene_value 列名更改
+        try:
+            cur.execute("ALTER TABLE slot_value_index ADD COLUMN scene_value TEXT")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
         cur.execute("CREATE INDEX IF NOT EXISTS idx_subject_value ON slot_value_index(subject_value)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_action_value ON slot_value_index(action_value)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_object_value ON slot_value_index(object_value)")

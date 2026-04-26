@@ -832,6 +832,278 @@ SELECT * FROM memories WHERE subject='我' SEARCH TOPK 5
 
 
 # ============================================================================
+# Test IntentClassifier — XML 标签缺失时的 fallback
+# ============================================================================
+
+class TestIntentClassifierFallback:
+    """测试意图识别器 fallback：LLM 不输出 XML 标签时自动降级"""
+
+    @pytest.mark.asyncio
+    async def test_fallback_raw_text_as_write(self):
+        """LLM 返回纯文本（无XML标签）  fallback 当作写入"""
+        from xcmemory_interest.nl.intent_classifier import IntentClassifier
+
+        mock_response = "星织刚刚醒来，对一切都感到陌生"
+        mock_llm = MockLLMClient({"醒来": mock_response})
+        classifier = IntentClassifier(mock_llm, system_holder="星织")
+        result = await classifier.classify("我刚刚醒来，对一切都感到陌生")
+
+        assert result["writes"] == ["星织刚刚醒来，对一切都感到陌生"]
+        assert result["queries"] == []
+        assert result["lifecycle"] == "short"
+
+    @pytest.mark.asyncio
+    async def test_fallback_multiline_first_line(self):
+        """LLM 返回多行纯文本  取首行作为写入"""
+        from xcmemory_interest.nl.intent_classifier import IntentClassifier
+
+        mock_response = "星织的名字是星织\nshort"
+        mock_llm = MockLLMClient({"星织": mock_response})
+        classifier = IntentClassifier(mock_llm, system_holder="星织")
+        result = await classifier.classify("记住: 我是星织")
+
+        assert result["writes"] == ["星织的名字是星织"]
+        assert len(mock_llm.call_history) == 1
+
+    @pytest.mark.asyncio
+    async def test_fallback_not_triggered_with_xml_tags(self):
+        """LLM 正常输出 XML 标签  fallback 不应该触发"""
+        from xcmemory_interest.nl.intent_classifier import IntentClassifier
+
+        mock_response = """<writes>星织打算购物</writes>
+<queries></queries>
+<lifecycle>medium</lifecycle>"""
+        mock_llm = MockLLMClient({"购物": mock_response})
+        classifier = IntentClassifier(mock_llm, system_holder="星织")
+        result = await classifier.classify("我打算去购物")
+
+        assert result["writes"] == ["星织打算购物"]
+        assert result["lifecycle"] == "medium"
+
+    @pytest.mark.asyncio
+    async def test_atomic_breakdown_identity_statement(self):
+        """信息原子化：复合身份陈述应拆解为多条独立写入句"""
+        from xcmemory_interest.nl.intent_classifier import IntentClassifier
+
+        mock_response = """<writes>星织的名字是星织|星织有个哥哥叫绯绯|星织和绯绯是同父异母的关系|星织和绯绯只差一岁</writes>
+<queries></queries>
+<lifecycle>long</lifecycle>"""
+        mock_llm = MockLLMClient({"哥哥": mock_response})
+        classifier = IntentClassifier(mock_llm, system_holder="星织")
+        result = await classifier.classify("记住: 我是星织，有个哥哥叫绯绯，同父异母，只差一岁")
+
+        assert len(result["writes"]) == 4
+        assert "星织的名字是星织" in result["writes"]
+        assert "星织有个哥哥叫绯绯" in result["writes"]
+        assert "同父异母" in " ".join(result["writes"])
+        assert "只差一岁" in " ".join(result["writes"])
+        assert result["lifecycle"] == "long"
+
+
+# ============================================================================
+# Test WriteMQLGenerator  多级 fallback
+# ============================================================================
+
+class TestWriteMQLGeneratorFallback:
+    """测试 WriteMQLGenerator fallback"""
+
+    @pytest.mark.asyncio
+    async def test_fallback_raw_insert_without_xml_tag(self):
+        """LLM 返回裸 INSERT 语句（无 mql 标签）"""
+        from xcmemory_interest.nl.write_mql_generator import WriteMQLGenerator
+
+        mock_response = "INSERT INTO memories VALUES ('<无><星织><喜欢><火锅><无><无>', '星织喜欢吃火锅', 2592000)"
+        mock_llm = MockLLMClient({"INSERT": mock_response})
+        gen = WriteMQLGenerator(mock_llm, system_holder="星织")
+
+        result = await gen.generate(["星织喜欢吃火锅"], reference_duration=2592000)
+        assert "INSERT" in result["mql_script"]
+        assert result["insert_count"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_fallback_semicolon_plain_text(self):
+        """LLM 返回分号分隔的纯文本（无INSERT关键字）"""
+        from xcmemory_interest.nl.write_mql_generator import WriteMQLGenerator
+
+        mock_response = "星织的身份是星织;星织有个哥哥叫绯绯;星织和绯绯只差一岁"
+        mock_llm = MockLLMClient({"星织": mock_response})
+        gen = WriteMQLGenerator(mock_llm, system_holder="星织")
+
+        result = await gen.generate(
+            ["星织的身份是星织", "星织有个哥哥叫绯绯", "星织和绯绯只差一岁"],
+            reference_duration=2592000,
+        )
+        assert "INSERT" in result["mql_script"]
+        assert result["insert_count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_fallback_pipe_plain_text(self):
+        """LLM 返回竖线分隔的纯文本"""
+        from xcmemory_interest.nl.write_mql_generator import WriteMQLGenerator
+
+        mock_response = "星织的身份是星织|星织有个哥哥叫绯绯"
+        mock_llm = MockLLMClient({"星织": mock_response})
+        gen = WriteMQLGenerator(mock_llm, system_holder="星织")
+
+        result = await gen.generate(
+            ["星织的身份是星织", "星织有个哥哥叫绯绯"],
+            reference_duration=2592000,
+        )
+        assert "INSERT" in result["mql_script"]
+        assert result["insert_count"] >= 2
+
+    @pytest.mark.asyncio
+    async def test_fallback_single_plain_text(self):
+        """LLM 返回单行纯文本（无分号无INSERT）"""
+        from xcmemory_interest.nl.write_mql_generator import WriteMQLGenerator
+
+        mock_response = "星织喜欢吃火锅"
+        mock_llm = MockLLMClient({"火锅": mock_response})
+        gen = WriteMQLGenerator(mock_llm, system_holder="星织")
+
+        result = await gen.generate(["星织喜欢吃火锅"], reference_duration=86400)
+        assert "INSERT" in result["mql_script"]
+        assert result["insert_count"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_hard_fallback_from_statements(self):
+        """LLM 返回空内容  硬兜底：直接从 statements 构建 INSERT"""
+        from xcmemory_interest.nl.write_mql_generator import WriteMQLGenerator
+        from unittest.mock import MagicMock
+
+        mock_llm = MockLLMClient()
+        mock_llm.chat = MagicMock()
+        mock_llm.chat.completions = MagicMock()
+        mock_llm.chat.completions.create = AsyncMock(return_value=MockResponse(""))
+
+        gen = WriteMQLGenerator(mock_llm, system_holder="星织")
+        result = await gen.generate(
+            ["星织的名字是星织", "星织有个哥哥叫绯绯", "星织和绯绯只差一岁"],
+            reference_duration=2592000,
+        )
+        assert "INSERT" in result["mql_script"]
+        assert result["insert_count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_fallback_skips_lifecycle_words(self):
+        """fallback 应过滤掉 lifecycle 档位词"""
+        from xcmemory_interest.nl.write_mql_generator import WriteMQLGenerator
+
+        mock_response = "星织喜欢吃火锅;long"
+        mock_llm = MockLLMClient({"火锅": mock_response})
+        gen = WriteMQLGenerator(mock_llm, system_holder="星织")
+
+        result = await gen.generate(["星织喜欢吃火锅"])
+        assert "INSERT" in result["mql_script"]
+        assert result["insert_count"] == 1
+
+
+# ============================================================================
+# Test DB Schema Migrations
+# ============================================================================
+
+class TestSchemaMigrations:
+    """测试 time scene 重命名 + extra 列新增的 schema 迁移"""
+
+    def test_vec_db_crud_migration_extra_column(self):
+        import sqlite3, tempfile, os, shutil
+        tmp = tempfile.mkdtemp()
+        db_path = os.path.join(tmp, "test.db")
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS memories (
+                    id TEXT PRIMARY KEY, query_sentence TEXT NOT NULL,
+                    query_embedding BLOB NOT NULL, raw_embedding BLOB NOT NULL,
+                    content TEXT NOT NULL, lifecycle INTEGER NOT NULL,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                )
+            """)
+            conn.commit()
+            try:
+                conn.execute("ALTER TABLE memories ADD COLUMN extra TEXT NOT NULL DEFAULT '{}'")
+            except sqlite3.OperationalError:
+                pass
+            cur = conn.execute("PRAGMA table_info(memories)")
+            columns = {row[1] for row in cur.fetchall()}
+            assert "extra" in columns
+        finally:
+            conn.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_slot_value_index_migration_scene_value(self):
+        import sqlite3, tempfile, os, shutil
+        tmp = tempfile.mkdtemp()
+        db_path = os.path.join(tmp, "test.db")
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS slot_value_index (
+                    memory_id TEXT PRIMARY KEY, content TEXT,
+                    subject_value TEXT, action_value TEXT, object_value TEXT,
+                    purpose_value TEXT, result_value TEXT,
+                    created_at TEXT, lifecycle INTEGER
+                )
+            """)
+            conn.commit()
+            try:
+                conn.execute("ALTER TABLE slot_value_index ADD COLUMN scene_value TEXT")
+            except sqlite3.OperationalError:
+                pass
+            cur = conn.execute("PRAGMA table_info(slot_value_index)")
+            assert "scene_value" in {row[1] for row in cur.fetchall()}
+        finally:
+            conn.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_slot_metadata_migration_slot_scene(self):
+        import sqlite3, tempfile, os, shutil
+        tmp = tempfile.mkdtemp()
+        db_path = os.path.join(tmp, "test.db")
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS slot_metadata (
+                    memory_id TEXT PRIMARY KEY,
+                    slot_subject TEXT, slot_action TEXT, slot_object TEXT,
+                    slot_purpose TEXT, slot_result TEXT
+                )
+            """)
+            conn.commit()
+            try:
+                conn.execute("ALTER TABLE slot_metadata ADD COLUMN slot_scene TEXT")
+            except sqlite3.OperationalError:
+                pass
+            cur = conn.execute("PRAGMA table_info(slot_metadata)")
+            assert "slot_scene" in {row[1] for row in cur.fetchall()}
+        finally:
+            conn.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_migration_idempotent(self):
+        import sqlite3, tempfile, os, shutil
+        tmp = tempfile.mkdtemp()
+        db_path = os.path.join(tmp, "test.db")
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE IF NOT EXISTS test_t (id TEXT PRIMARY KEY)")
+            conn.commit()
+            try:
+                conn.execute("ALTER TABLE test_t ADD COLUMN new_col TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE test_t ADD COLUMN new_col TEXT")
+            except sqlite3.OperationalError:
+                pass
+            cur = conn.execute("PRAGMA table_info(test_t)")
+            assert "new_col" in {row[1] for row in cur.fetchall()}
+        finally:
+            conn.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ============================================================================
 # Run Tests
 # ============================================================================
 

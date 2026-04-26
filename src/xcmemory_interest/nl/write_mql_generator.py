@@ -147,6 +147,35 @@ class WriteMQLGenerator:
         mql_text = self._extract_tag(raw, "mql")
         mql_text = mql_text.strip() if mql_text else ""
 
+        # Fallback: LLM 未用 <mql> 标签时，尝试从原始输出中提取 INSERT 语句
+        if not mql_text and raw.strip():
+            raw_stripped = raw.strip()
+            if "INSERT" in raw_stripped.upper():
+                # LLM 直接输出了 INSERT 但没有 XML 标签
+                mql_text = raw_stripped
+            elif ";" in raw_stripped or "|" in raw_stripped:
+                # LLM 输出了分号/竖线分隔的纯文本语句列表，
+                # 把它们当作 query_sentence 值，自动补全 INSERT 包装
+                sep = ";" if ";" in raw_stripped else "|"
+                parts = [p.strip() for p in raw_stripped.split(sep) if p.strip()]
+                # 清理掉非陈述文本（如 "long" "short" 等档位词）
+                lifecycle_words = {"permanent", "long", "medium", "short"}
+                parts = [p for p in parts if p.lower() not in lifecycle_words]
+                if parts:
+                    mql_text = ";".join(
+                        f"INSERT INTO memories VALUES ('<无><{self.system_holder}><是><{p}><无><无>', '{p}', {reference_duration})"
+                        for p in parts
+                    )
+            else:
+                # LLM 输出了单条纯文本，当作 content 值
+                mql_text = (
+                    f"INSERT INTO memories VALUES "
+                    f"('<无><{self.system_holder}><是><{raw_stripped}><无><无>', "
+                    f"'{raw_stripped}', {reference_duration})"
+                )
+            if self.debug:
+                print(f"[WriteMQLGenerator DEBUG] fallback: using raw output as MQL")
+
         # 防御性修复：确保每条都以 INSERT 开头
         if mql_text:
             parts = [p.strip() for p in mql_text.split(";") if p.strip()]
@@ -156,6 +185,21 @@ class WriteMQLGenerator:
                     p = "INSERT INTO memories VALUES " + p
                 fixed_parts.append(p)
             mql_text = ";".join(fixed_parts)
+
+        # 硬兜底：LLM 完全失败时，直接根据 statements 构建 INSERT
+        if not mql_text and statements:
+            if self.debug:
+                print(f"[WriteMQLGenerator DEBUG] hard fallback: building INSERT from statements list")
+            parts = []
+            for s in statements:
+                s_escaped = s.replace("'", "''")
+                s_slot_safe = s.replace("<", "＜").replace(">", "＞")
+                parts.append(
+                    f"INSERT INTO memories VALUES "
+                    f"('<无><{self.system_holder}><是><{s_slot_safe}><无><无>', "
+                    f"'{s_escaped}', {reference_duration})"
+                )
+            mql_text = ";".join(parts)
 
         insert_count = mql_text.count("INSERT")
 

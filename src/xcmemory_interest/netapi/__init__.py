@@ -810,6 +810,8 @@ class APIServer:
             "intent": result.get("intent", {}),
             "writes": len(result.get("writes", [])),
             "llm_calls": result.get("llm_calls", 0),
+            "steps_summary": result.get("steps_summary", []),
+            "trace": result.get("trace", []),
         }
 
         try:

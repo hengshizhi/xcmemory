@@ -42,13 +42,17 @@ INTENT_CLASSIFY_PROMPT = """# Task
 
 ## 2. 拆解原则
 - 一句话可能同时包含写入和查询意图，需全部拆出
+- **★信息原子化★：一条写入句只表达一个独立事实。** 如果一句话包含多个独立事实（身份、关系、年龄、时间等），必须拆成多条独立的写入陈述句，每条只承载一个事实。
+  - 正确："我是星织，有个哥哥叫绯绯" → "星织的名字是星织"|"星织有个哥哥叫绯绯"
+  - 错误："我是星织，有个哥哥叫绯绯" → "星织有个哥哥叫绯绯"（名字信息丢失了！）
+  - 正确："我是星织，同父异母，只差一岁" → "星织的名字叫星织"|"星织和绯绯是同父异母的关系"|"星织和绯绯只差一岁"
+  - 注意：主语的名字始终要出现在 subject 槽位，"是"类关系要显式写出主语
 - 拆出的陈述句应**尽量契合六槽位**的表达能力：
   - <scene><subject><action><object><purpose><result>
   - scene 槽包含时间场景（平时/晚上/周末/假期/早上/深夜等）和空间场景（家里/公司/学校/户外/线上/路上等）
   - 两个对象之间的关系用 subject-action-object 表达
   - 表达目的用 purpose 槽位
   - 结果/补充用 result 槽位
-- 如果一句话包含多个独立信息，拆成多个陈述句
 - **查询句需要有一定的发散思维**：如果用户没有指定查询什么，可以从上下文推导可能需要的信息
 
 ## 3. 陈述句格式
@@ -103,6 +107,11 @@ INTENT_CLASSIFY_PROMPT = """# Task
 <writes></writes>
 <queries>星织是一个怎么样的人？</queries>
 <lifecycle>short</lifecycle>
+
+用户："我是星织，有个哥哥叫绯绯，同父异母，只差一岁"
+<writes>星织的名字是星织|星织有个哥哥叫绯绯|星织和绯绯是同父异母的关系|星织和绯绯只差一岁</writes>
+<queries></queries>
+<lifecycle>long</lifecycle>
 
 # 输出格式（严格遵循）
 <writes>写入陈述1|写入陈述2|...</writes>
@@ -221,6 +230,21 @@ class IntentClassifier:
 
         writes = [s.strip() for s in writes_raw.split("|") if s.strip()]
         queries = [s.strip() for s in queries_raw.split("|") if s.strip()]
+
+        # Fallback: LLM 未使用 XML 标签时，将原始输出作为写入陈述
+        if not writes and not queries and raw.strip():
+            raw_stripped = raw.strip()
+            # 尝试将非标签的纯文本首行作为写入陈述
+            if "\n" in raw_stripped:
+                first_line = raw_stripped.split("\n")[0].strip()
+                if first_line and not first_line.startswith("<"):
+                    writes = [first_line]
+                    lifecycle_raw = "short"
+            elif not raw_stripped.startswith("<"):
+                writes = [raw_stripped]
+                lifecycle_raw = "short"
+            if self.debug:
+                print(f"[IntentClassifier DEBUG] fallback: treating raw as write → {writes}")
 
         # 档位校验
         if lifecycle_raw not in LIFECYCLE_TIERS:

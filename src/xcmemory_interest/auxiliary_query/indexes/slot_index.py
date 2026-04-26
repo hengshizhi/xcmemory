@@ -84,6 +84,14 @@ class SlotIndex:
             },
             if_not_exists=True,
         )
+        # 迁移：旧表 time→scene 重命名
+        try:
+            self.sql_db._conn.cursor().execute(
+                "ALTER TABLE slot_metadata ADD COLUMN slot_scene TEXT"
+            )
+            self.sql_db._auto_commit()
+        except Exception:
+            pass  # 列已存在
 
     def add(
         self,
