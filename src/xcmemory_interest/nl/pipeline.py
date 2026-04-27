@@ -276,14 +276,24 @@ class NLPipeline:
             write_mql_script = write_mql_result["mql_script"]
 
             if write_mql_script:
-                try:
-                    interp = Interpreter()
-                    interp.bind("mem", self.mem)
-                    write_results = interp.execute_script(write_mql_script)
-                except Exception as e:
-                    if self.debug:
-                        print(f"[NLPipeline DEBUG] write execute error: {e}")
-                    write_results = []
+                # ── 去重：查询已有记忆，跳过近重复写入 ──
+                write_mql_script = self._dedup_writes(
+                    write_mql_script, all_steps_summary
+                )
+                if not write_mql_script:
+                    all_steps_summary.append(
+                        f"2a.写入流程→全部被去重跳过，0条INSERT"
+                    )
+
+                if write_mql_script:
+                    try:
+                        interp = Interpreter()
+                        interp.bind("mem", self.mem)
+                        write_results = interp.execute_script(write_mql_script)
+                    except Exception as e:
+                        if self.debug:
+                            print(f"[NLPipeline DEBUG] write execute error: {e}")
+                        write_results = []
 
                 write_mql_list = [p.strip() for p in write_mql_script.split(";") if p.strip()]
 
@@ -489,6 +499,64 @@ class NLPipeline:
     # =========================================================================
     # 内部辅助方法
     # =========================================================================
+
+    def _dedup_writes(
+        self, write_mql_script: str, steps_summary: list[str]
+    ) -> str:
+        """去重：解析每条 INSERT 的六槽，查询已有记忆，跳过近重复写入。
+        
+        距离阈值：distance < 0.05 → 视为重复，跳过。
+        
+        Returns:
+            去重后的 MQL 脚本（空字符串表示全部被去重）
+        """
+        DEDUP_DISTANCE = 0.15
+        lines = [p.strip() for p in write_mql_script.split(";") if p.strip()]
+        kept, skipped = [], []
+        
+        # 快速解析 INSERT ... VALUES ('<六槽>', 'content', lifecycle) 中的 query_sentence
+        import re as _re
+        for line in lines:
+            m = _re.search(r"VALUES\s*\('(<[^>]*>(?:<[^>]*>){5})'", line, _re.IGNORECASE)
+            if not m:
+                kept.append(line)
+                continue
+            
+            query_sentence = m.group(1)
+            slots = _re.findall(r"<([^>]*)>", query_sentence)
+            if len(slots) != 6:
+                kept.append(line)
+                continue
+            
+            slot_names = ["scene", "subject", "action", "object", "purpose", "result"]
+            query_slots = {name: val for name, val in zip(slot_names, slots) if val != "无" and val}
+            
+            if not query_slots:
+                kept.append(line)
+                continue
+            
+            try:
+                results = self.mem.search_subspace(query_slots, top_k=2)
+                dup_found = False
+                for r in results:
+                    if r.distance < DEDUP_DISTANCE:
+                        dup_found = True
+                        break
+                if dup_found:
+                    skipped.append(line[:80])
+                else:
+                    kept.append(line)
+            except Exception:
+                kept.append(line)  # 查询失败不阻塞写入
+        
+        if skipped:
+            steps_summary.append(
+                f"2b.去重→{len(skipped)}条重复跳过: {', '.join(skipped)}"
+            )
+        if not kept and skipped:
+            steps_summary.append("2b.去重→所有写入均为重复，全部跳过")
+        
+        return ";".join(kept)
 
     def _exec_mql(self, mql: str) -> tuple[list[dict], str]:
         """执行 MQL 语句并返回结果列表和错误信息。

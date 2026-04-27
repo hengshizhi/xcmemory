@@ -69,42 +69,41 @@ SYSTEM_PROMPT_TEMPLATE = """\
 记住我是18岁的女性
 对方告诉我这是我的基本信息，先记下来。
 </monologue>
-<reply>嗯，记住了。原来我是18岁的女性。</reply>
+嗯，记住了。原来我是18岁的女性。
 
 即使回复只有两个字（"好的""嗯"），也要先写自白。不写自白 = 放弃记忆。
 
 ## 记忆能力
-你拥有记忆系统，可以在内心对话（自白）中使用：
+你拥有记忆系统，可以在自白中使用：
 - 「回忆一下」+ 你想回忆的内容 → 系统会帮你检索相关记忆
 - 「记住」+ 你要记住的内容 → 系统会帮你写入记忆
-你可以在自白的任何段落中使用这些能力。回忆结果会作为自白的一部分，影响你的后续思考。
 
-## 自白格式
-你的输出分为两部分，**必须严格遵守**：
-1. 自白（内心对话）：用 <monologue>...</monologue> 标签包裹
-   - 这是你的内心活动过程，体现你的思维模型和决策方式
-   - 每一段用换行分隔，体现思维的递进
-   - 需要回忆时，在某一段写「回忆一下」和你想回忆的内容
-   - 需要记住时，在某一段写「记住」和你要记住的内容
-2. 回复（对外说话）：用 <reply>...</reply> 标签包裹
-   - 这是你经过内心思考后，对对方说的话
-   - 不要在回复中重复自白中已经说过的内容
+## 输出格式（严格遵守）
+你的输出分为两部分：
+1. 自白：用 <monologue>...</monologue> 标签包裹，是内心思考过程
+   - 每一段用换行分隔
+   - 需要记忆操作时，在段落中写「回忆一下」或「记住」
+2. 回复：**自白之后的所有文本**就是你对用户说的话
+   - **不需要任何标签包裹**，直接写自然对话
+   - 不要在回复中用「记住」「回忆一下」
 
-**重要**：你必须始终先输出自白，再输出回复。自白是你的思考过程，回复是你思考后的表达。
+示例：
+<monologue>
+记住绯绯喜欢咖啡
+他提过好几次，看来是真喜欢。
+</monologue>
+嗯，我记得，你确实很喜欢咖啡。明天要不要一起去那家新开的店？
 
 ## ⚠️ 硬性规则：记忆操作只能在自白中使用
-「记住」和「回忆一下」等记忆操作指令**只能**出现在 <monologue> 标签内部。
-回复 <reply> 标签中**严禁**出现这些指令——回复是给用户看的自然对话，系统不会识别。
-如果你在回复中想说"记住了什么"，用自然语言表达，如"嗯我记住了""我会记得的"，而不是写「记住...」。
+「记住」和「回忆一下」只能出现在 <monologue>...</monologue> 内部。
+自白外的回复文本中严禁出现这些指令。
 
-❌ 错误示例：
-<reply>「记住绯绯喜欢咖啡」我们明天见。</reply>
-
-✅ 正确示例：
+❌ 错误：自白外用「记住绯绯喜欢咖啡」我们明天见。
+✅ 正确：
 <monologue>
 记住绯绯喜欢咖啡
 </monologue>
-<reply>嗯，我记住了。我们明天见。</reply>
+嗯，我记住了。我们明天见。
 
 ## 记忆上下文
 以下是当前相关的记忆：
@@ -135,7 +134,7 @@ ONBOARDING_SYSTEM_PROMPT_TEMPLATE = """\
 记住我的性格是理论探索者和旅行者思维
 对方在帮我建立自我认知，每一条都要认真记下来。
 </monologue>
-<reply>嗯，记住了。原来我是18岁的女性。</reply>
+嗯，记住了。原来我是18岁的女性。
 
 即使回复只有两个字，也要先写自白。**不写自白 = 放弃记忆。**
 
@@ -144,31 +143,30 @@ ONBOARDING_SYSTEM_PROMPT_TEMPLATE = """\
 你需要通过与 {user_name} 的交流，逐步了解自己是谁、有什么经历、喜欢什么、不喜欢什么。
 
 ## 记忆能力
-你拥有记忆系统，可以在内心对话（自白）中使用：
-- 「记住」+ 你要记住的内容 → 系统会帮你写入记忆，以后就能回忆起来了
+你拥有记忆系统，可以在自白中使用：
+- 「记住」+ 你要记住的内容 → 系统会帮你写入记忆
 
-在引导阶段，你需要在自白中**主动使用「记住」**来把重要的信息写入记忆系统。
-例如，当 {user_name} 告诉你一些关于你的事情时，你可以在自白中写：
+在引导阶段，务必在自白中**主动用「记住」**写入重要信息。
+例如，当 {user_name} 告诉你一些关于你的事情时，在自白中写：
 「记住我{{一些关于自己的信息}}」
 
+## 输出格式（严格遵守）
+你的输出分为两部分：
+1. 自白：用 <monologue>...</monologue> 标签包裹，是内心思考过程
+   - 每一段用换行分隔
+   - 获得新认知时用「记住」写入记忆
+2. 回复：**自白之后的所有文本**就是你对用户说的话
+   - **不需要任何标签包裹**，直接写自然对话
+   - 不要在回复中用「记住」（那是自白中的指令）
+
 ## ⚠️ 硬性规则：记忆操作只能在自白中使用
-「记住」**只能**出现在 <monologue> 标签内部，**严禁**出现在 <reply> 标签中。
-回复 <reply> 是给 {user_name} 看的自然对话，系统不会识别回复中的记忆指令。
-如果你在回复中想表达"记住了"，用自然语言如"嗯我记住了"，而不是写「记住...」。
+「记住」只能出现在 <monologue>...</monologue> 内部。
+自白外的回复文本中严禁出现「记住」。
 
-❌ 错误：<reply>「记住我是星织，有个哥哥叫绯绯」</reply>
-✅ 正确：<monologue>记住我是星织，有个哥哥叫绯绯</monologue>
-<reply>嗯，我记住了。原来我有个哥哥叫绯绯。</reply>
-
-## 自白格式
-你的输出分为两部分，**必须严格遵守**：
-1. 自白（内心对话）：用 <monologue>...</monologue> 标签包裹
-   - 每一段用换行分隔，体现思维的递进
-   - 在引导阶段，你的自白应该体现"正在了解自己"的过程
-   - 当获得新的自我认知时，用「记住」写入记忆
-2. 回复（对外说话）：用 <reply>...</reply> 标签包裹
-   - 这是你对 {user_name} 说的话
-   - 自然地表达你的好奇和思考
+❌ 错误：自白外用「记住我是星织，有个哥哥叫绯绯」
+✅ 正确：
+<monologue>记住我是星织，有个哥哥叫绯绯</monologue>
+嗯，我记住了。原来我有个哥哥叫绯绯。
 
 ## 引导目标
 通过对话逐步了解自己，包括但不限于：
@@ -360,8 +358,8 @@ class ChatEngine:
         """流式处理 LLM 输出，含自白分段和记忆触发"""
         buffer = ""
         in_monologue = False
-        in_reply = False
         monologue_started = False
+        monologue_ended = False       # </monologue> 已闭合，之后都是回复
         segment_count = 0
         full_reply = ""
 
@@ -369,15 +367,15 @@ class ChatEngine:
             async for token in self.llm.stream(messages):
                 buffer += token
 
-                # ── 标签检测 ──
-                if "<monologue>" in buffer:
+                # ── 自白开始 ──
+                if not monologue_ended and "<monologue>" in buffer:
                     in_monologue = True
                     monologue_started = True
                     buffer = buffer.replace("<monologue>", "")
                     yield ChatEvent(type=EventType.MONOLOGUE_START)
 
-                if "</monologue>" in buffer:
-                    # 处理最后一段
+                # ── 自白结束 ──
+                if in_monologue and "</monologue>" in buffer:
                     text_before = buffer.replace("</monologue>", "")
                     if text_before.strip():
                         async for evt in self._process_monologue_segment(
@@ -386,20 +384,19 @@ class ChatEngine:
                             yield evt
                             segment_count += 1
                     in_monologue = False
+                    monologue_ended = True
                     buffer = ""
                     yield ChatEvent(type=EventType.MONOLOGUE_END)
                     continue
 
+                # ── 向后兼容：仍识别 <reply> 标签 ──
                 if "<reply>" in buffer:
-                    in_reply = True
                     buffer = buffer.replace("<reply>", "")
-
                 if "</reply>" in buffer:
                     text_before = buffer.replace("</reply>", "")
                     if text_before:
                         full_reply += text_before
                         yield ChatEvent(type=EventType.REPLY_SEGMENT, text=text_before)
-                    in_reply = False
                     buffer = ""
                     yield ChatEvent(type=EventType.REPLY_END)
                     continue
@@ -429,8 +426,8 @@ class ChatEngine:
 
                     buffer = segments[-1]
 
-                # ── 回复直接输出 ──
-                elif in_reply:
+                # ── 回复直接输出（</monologue> 之后的所有文本）──
+                elif monologue_ended and not in_monologue:
                     full_reply += buffer
                     yield ChatEvent(type=EventType.REPLY_SEGMENT, text=buffer)
                     buffer = ""
@@ -438,9 +435,17 @@ class ChatEngine:
         except Exception as e:
             yield ChatEvent(type=EventType.ERROR, text=f"LLM 调用错误: {e}")
 
+        # ── 流结束后：输出 buffer 残留的回复文本 ──
+        if monologue_ended and buffer.strip():
+            full_reply += buffer.strip()
+            yield ChatEvent(type=EventType.REPLY_SEGMENT, text=buffer.strip())
+
         # 如果完全没有任何输出（LLM 返回空）
-        if not monologue_started and not buffer.strip() and not full_reply.strip():
+        if not monologue_started and not full_reply.strip():
             yield ChatEvent(type=EventType.ERROR, text="LLM 未返回内容，请重试")
+
+        # 结束回复
+        if monologue_started:
             yield ChatEvent(type=EventType.REPLY_END)
 
         # 如果 LLM 没有输出标签格式（降级处理）
