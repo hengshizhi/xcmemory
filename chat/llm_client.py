@@ -7,6 +7,7 @@ OpenAI 兼容 LLM 客户端
 
 from typing import AsyncIterator
 
+import httpx
 from openai import AsyncOpenAI
 
 
@@ -20,11 +21,17 @@ class LLMClient:
         model: str,
         max_tokens: int = 2048,
         temperature: float = 0.8,
+        timeout: float = 120.0,
     ):
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            http_client=httpx.AsyncClient(timeout=timeout),
+        )
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.timeout = timeout
 
     async def stream(self, messages: list[dict]) -> AsyncIterator[str]:
         """

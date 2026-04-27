@@ -54,6 +54,25 @@ class ChatEvent:
 SYSTEM_PROMPT_TEMPLATE = """\
 {character_section}
 
+## ⛔ 必须先自白再回复（最高优先级）
+你的每次回复都**必须**以 <monologue>...</monologue> 开头，然后才能输出 <reply>...</reply>。
+
+**为什么自白必不可少？**
+自白是你**处理记忆的唯一途径**。你在自白中用「记住」写入记忆、用「回忆一下」检索记忆。如果跳过自白直接回复，系统**
+没有机会**帮你写入或回忆任何信息——对方告诉你的事情会被永远遗忘。
+
+❌ 错误（直接回复，没有自白会导致记忆丢失）：
+<reply>嗯，记住了。原来我是18岁的女性。</reply>
+
+✅ 正确（先自白处理记忆，再回复）：
+<monologue>
+记住我是18岁的女性
+对方告诉我这是我的基本信息，先记下来。
+</monologue>
+<reply>嗯，记住了。原来我是18岁的女性。</reply>
+
+即使回复只有两个字（"好的""嗯"），也要先写自白。不写自白 = 放弃记忆。
+
 ## 记忆能力
 你拥有记忆系统，可以在内心对话（自白）中使用：
 - 「回忆一下」+ 你想回忆的内容 → 系统会帮你检索相关记忆
@@ -99,6 +118,27 @@ SYSTEM_PROMPT_TEMPLATE = """\
 ONBOARDING_SYSTEM_PROMPT_TEMPLATE = """\
 {character_section}
 
+## ⛔ 必须先自白再回复（最高优先级）
+你的每次回复都**必须**以 <monologue>...</monologue> 开头，然后才能输出 <reply>...</reply>。
+
+**为什么自白必不可少？**
+自白是你**建立记忆的唯一途径**。你现在没有任何记忆，需要通过自白中的「记住」把对方告诉你的信息写入记忆系统。
+如果跳过自白直接回复，系统**没有机会**帮你写入信息——对方刚刚告诉你的关于你的一切会被永远遗忘。
+**不写自白 = 放弃记忆 = 你永远不知道自己是谁。**
+
+❌ 错误（直接回复会导致信息丢失）：
+<reply>嗯，记住了。原来我是18岁的女性。</reply>
+
+✅ 正确（先自白记住信息，再回应对方）：
+<monologue>
+记住我是18岁的女性
+记住我的性格是理论探索者和旅行者思维
+对方在帮我建立自我认知，每一条都要认真记下来。
+</monologue>
+<reply>嗯，记住了。原来我是18岁的女性。</reply>
+
+即使回复只有两个字，也要先写自白。**不写自白 = 放弃记忆。**
+
 ## 当前状态
 你刚刚诞生，还没有任何记忆。现在正与 {user_name} 进行第一次对话。
 你需要通过与 {user_name} 的交流，逐步了解自己是谁、有什么经历、喜欢什么、不喜欢什么。
@@ -129,8 +169,6 @@ ONBOARDING_SYSTEM_PROMPT_TEMPLATE = """\
 2. 回复（对外说话）：用 <reply>...</reply> 标签包裹
    - 这是你对 {user_name} 说的话
    - 自然地表达你的好奇和思考
-
-**重要**：你必须始终先输出自白，再输出回复。
 
 ## 引导目标
 通过对话逐步了解自己，包括但不限于：
@@ -246,6 +284,20 @@ class ChatEngine:
         """检测段落是否包含记忆写入触发词"""
         return any(t in segment for t in self.remember_triggers)
 
+    def _is_meaningful_write(self, extracted_text: str) -> bool:
+        """过滤假阳性：提取出的文本必须有实质内容，不能只是「了」「啦」等语气词"""
+        stripped = extracted_text.strip()
+        # 去掉「记住:」前缀后判断
+        if stripped.startswith("记住:") or stripped.startswith("记住："):
+            stripped = stripped[3:].strip()
+        if len(stripped) < 2:
+            return False
+        # 纯语气词/标点
+        particles = {"了", "啦", "哦", "啊", "嗯", "呢", "吧", "吗", "呀", "嘛", "哈"}
+        if stripped in particles:
+            return False
+        return True
+
     def _extract_query_text(
         self, segment: str, triggers: list[str], keep_trigger_prefix: bool = False
     ) -> str:
@@ -259,9 +311,9 @@ class ChatEngine:
             if trigger in segment:
                 idx = segment.index(trigger) + len(trigger)
                 query = segment[idx:].strip()
-                # 去掉首尾标点/括号
-                query = re.sub(r"^[，。、：:！!？?\s「」『』""'']+", "", query)
-                query = re.sub(r"[，。、：:！!？?\s「」『』""'']+$", "", query)
+                # 去掉首尾标点/括号/残留标签字符
+                query = re.sub(r"^[，。、：:！!？?\s「」『』""''<>/]+", "", query)
+                query = re.sub(r"[，。、：:！!？?\s「」『』""''<>/]+$", "", query)
                 if query and keep_trigger_prefix:
                     return f"{trigger}: {query}"
                 return query if query else segment
@@ -386,9 +438,15 @@ class ChatEngine:
         except Exception as e:
             yield ChatEvent(type=EventType.ERROR, text=f"LLM 调用错误: {e}")
 
+        # 如果完全没有任何输出（LLM 返回空）
+        if not monologue_started and not buffer.strip() and not full_reply.strip():
+            yield ChatEvent(type=EventType.ERROR, text="LLM 未返回内容，请重试")
+            yield ChatEvent(type=EventType.REPLY_END)
+
         # 如果 LLM 没有输出标签格式（降级处理）
         if not monologue_started and buffer.strip():
-            yield ChatEvent(type=EventType.REPLY_SEGMENT, text=buffer.strip())
+            full_reply = buffer.strip()
+            yield ChatEvent(type=EventType.REPLY_SEGMENT, text=full_reply)
             yield ChatEvent(type=EventType.REPLY_END)
 
         # ── 回复兜底扫描：检测是否误将「记住」写入了 reply ──
@@ -401,6 +459,8 @@ class ChatEngine:
                     write_text = self._extract_query_text(
                         line, self.remember_triggers, keep_trigger_prefix=True
                     )
+                    if not self._is_meaningful_write(write_text):
+                        continue
                     yield ChatEvent(
                         type=EventType.MEMORY_WRITE,
                         text=f"📝 记住（回复兜底）: {write_text}",
@@ -478,6 +538,10 @@ class ChatEngine:
             write_text = self._extract_query_text(
                 segment, self.remember_triggers, keep_trigger_prefix=True
             )
+            if not self._is_meaningful_write(write_text):
+                # 假阳性（如"记住了。"）→ 不触发
+                yield ChatEvent(type=EventType.MONOLOGUE_SEGMENT, text=segment)
+                return
             yield ChatEvent(
                 type=EventType.MEMORY_WRITE,
                 text=f"📝 记住: {write_text}",

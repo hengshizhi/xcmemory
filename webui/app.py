@@ -742,9 +742,18 @@ def build_app(pre_auth: bool = False, admin_user: str = "admin"):
             gr.Markdown("""
             **MQL 示例:**
             ```
-            SELECT * FROM memories WHERE subject='我' LIMIT 10
-            INSERT INTO memories VALUES ('<平时><我><学><编程><喜欢><有收获>', '我喜欢学编程', 86400)
-            SELECT * FROM memories WHERE [subject='我'] SEARCH TOPK 5
+            ── 查询 ──
+            SELECT * FROM memories WHERE subject='星织' LIMIT 10
+            SELECT * FROM memories WHERE [subject='星织'] SEARCH TOPK 5
+            SELECT * FROM memories WHERE subject='星织' TIME year(2026) AND month(04)
+
+            ── 写入（六槽：scene/subject/action/object/purpose/result）──
+            INSERT INTO memories VALUES ('<所有><星织><的><名字><名字><星织>', '星织的名字是星织', 2592000)
+            INSERT INTO memories VALUES ('<所有><星织><有><哥哥><关系><绯绯>', '星织有个哥哥叫绯绯', 2592000)
+
+            ── 删除 ──
+            DELETE FROM memories WHERE subject='星织'
+            DELETE FROM memories
             ```
             """)
             mql_in = gr.Textbox(label="MQL 语句", placeholder="SELECT * FROM memories ...", lines=6)
