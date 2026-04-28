@@ -1,0 +1,39 @@
+# xcmemory_interest 配置文件
+# 复制此文件为 config.toml 并填入你的配置
+
+[server]
+database_root = './data/xcmemory'
+host = '0.0.0.0'
+port = 8080
+ws_port = 8081
+
+[system]
+# 记忆系统持有者名称（NL查询时用于将"我"映射到正确的人称）
+holder = "我"
+
+[lifecycle_manager]
+infinity = 999999
+short_term_cap = 604800
+long_term_cap = 2592000
+transition_cap = 31536000
+min_scale = 0.1
+
+[netapi]
+guid = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+max_websocket_frame_size = 65536
+
+[admin]
+# 首次启动时自动生成，或手动填入
+api_key = ''
+
+[openai]
+# 填入你的 OpenAI 兼容 API 配置
+api_key = ''
+base_url = 'https://api.deepseek.com'
+model = 'deepseek-v4-flash'
+
+[snapshot]
+# 自动快照：每 N 次写入自动快照（0 禁用）
+write_threshold = 20
+# 空闲 N 分钟后下次写入前快照（0 禁用）
+idle_minutes = 30

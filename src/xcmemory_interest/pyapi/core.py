@@ -134,6 +134,8 @@ class MemorySystem:
         enable_interest_mode: bool = True,
         similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
         holder: str = "我",
+        snapshot_write_threshold: int = 20,
+        snapshot_idle_minutes: int = 30,
     ):
         """
         初始化 MemorySystem（延迟初始化，调用 initialize() 完成初始化）
@@ -145,6 +147,8 @@ class MemorySystem:
             enable_interest_mode: 是否启用兴趣记忆模式（False 则跳过 InterestEncoder 相关计算）
             similarity_threshold: 相似度阈值，超过此值视为相似（仅在 interest_mode 下生效）
             holder: 记忆系统持有者名称，NL 查询时用于将"我"映射到正确的人称
+            snapshot_write_threshold: 自动快照写入阈值（0 禁用自动快照）
+            snapshot_idle_minutes: 自动快照空闲阈值（0 禁用空闲快照）
         """
         self.name = name
         self.persist_directory = Path(persist_directory) / name
@@ -152,6 +156,8 @@ class MemorySystem:
         self.enable_interest_mode = enable_interest_mode
         self.similarity_threshold = similarity_threshold
         self.holder = holder  # 记忆系统持有者（NL→MQL 时替换"我"用）
+        self.snapshot_write_threshold = snapshot_write_threshold
+        self.snapshot_idle_minutes = snapshot_idle_minutes
 
         # 各数据库路径
         self.vec_db_path = str(self.persist_directory / "vec_db")
@@ -180,6 +186,8 @@ class MemorySystem:
         self._vec_db = VecDBCRUD(
             persist_directory=self.vec_db_path,
             vocab_size=self.vocab_size,
+            snapshot_write_threshold=self.snapshot_write_threshold,
+            snapshot_idle_minutes=self.snapshot_idle_minutes,
         )
 
         # Scheduler + TimeIndex + SlotIndex
@@ -936,6 +944,52 @@ class MemorySystem:
         self._time_index.clear()
         self._slot_index.clear()
 
+    # =========================================================================
+    # 快照管理
+    # =========================================================================
+
+    def create_snapshot(self, trigger_reason: str = "manual") -> str:
+        """
+        创建当前数据库快照。
+
+        Args:
+            trigger_reason: 触发原因
+
+        Returns:
+            snapshot_id
+        """
+        self._check_initialized()
+        return self._vec_db.snapshot_manager.create_snapshot(trigger_reason)
+
+    def list_snapshots(self) -> List[Dict[str, Any]]:
+        """列出所有快照"""
+        self._check_initialized()
+        return self._vec_db.snapshot_manager.list_snapshots()
+
+    def restore_snapshot(self, snapshot_id: str) -> bool:
+        """
+        回滚到指定快照。
+
+        会清空当前所有数据，然后从快照恢复。
+        """
+        self._check_initialized()
+        # 先清空辅助索引
+        self._time_index.clear()
+        self._slot_index.clear()
+        # 恢复
+        ok = self._vec_db.snapshot_manager.restore_snapshot(snapshot_id)
+        return ok
+
+    def delete_snapshot(self, snapshot_id: str) -> bool:
+        """删除指定快照"""
+        self._check_initialized()
+        return self._vec_db.snapshot_manager.delete_snapshot(snapshot_id)
+
+    def get_snapshot_status(self) -> Dict[str, Any]:
+        """获取快照管理器状态"""
+        self._check_initialized()
+        return self._vec_db.snapshot_manager.get_status()
+
     def get_stats(self) -> Dict[str, Any]:
         """
         获取记忆系统统计信息
@@ -1103,6 +1157,11 @@ class PyAPI:
         self.persist_directory.mkdir(parents=True, exist_ok=True)
         self.vocab_size = vocab_size
 
+        # 快照配置（从 config.toml 读取）
+        snap_cfg = self._load_snapshot_config()
+        self._snapshot_write_threshold = snap_cfg[0]
+        self._snapshot_idle_minutes = snap_cfg[1]
+
         # 管理的记忆系统: system_name -> MemorySystem
         self._systems: Dict[str, MemorySystem] = {}
 
@@ -1135,6 +1194,26 @@ class PyAPI:
         except Exception:
             pass
         return "我"
+
+    def _load_snapshot_config(self) -> tuple:
+        """从 config.toml 读取快照配置，返回 (write_threshold, idle_minutes)"""
+        try:
+            config_path = self.persist_directory.parent.parent / "config.toml"
+            if config_path.exists():
+                try:
+                    import tomllib
+                except ImportError:
+                    import tomli as tomllib
+                with open(config_path, "rb") as f:
+                    cfg = tomllib.load(f)
+                snap = cfg.get("snapshot", {})
+                return (
+                    int(snap.get("write_threshold", 20)),
+                    int(snap.get("idle_minutes", 30)),
+                )
+        except Exception:
+            pass
+        return (20, 30)
 
     def _get_system_holder(self, name: str) -> str:
         """获取指定记忆系统的 holder，优先从元数据读，否则用配置默认值"""
@@ -1226,6 +1305,8 @@ class PyAPI:
             enable_interest_mode=enable_interest_mode,
             similarity_threshold=similarity_threshold,
             holder=holder,
+            snapshot_write_threshold=self._snapshot_write_threshold,
+            snapshot_idle_minutes=self._snapshot_idle_minutes,
         )
 
         if initialize:

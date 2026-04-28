@@ -319,6 +319,7 @@ class WriteMQLGenerator:
                 fixed = f"INSERT INTO memories VALUES ('{new_qs}', '{content}', {lifecycle})"
                 fixed_parts.append(fixed)
             else:
-                fixed_parts.append(match.group(0))
+                # match.group(0) 只匹配 VALUES (...) 需要补回 INSERT INTO memories 前缀
+                fixed_parts.append(f"INSERT INTO memories {match.group(0)}")
 
         return ";".join(fixed_parts) if fixed_parts else mql_text

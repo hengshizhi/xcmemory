@@ -102,6 +102,10 @@ class TokenType(Enum):
     MONTH = auto()
     DAY = auto()
     CLOCK = auto()
+    # 快照管理
+    SNAPSHOT = auto()
+    SNAPSHOTS = auto()
+    RESTORE = auto()
 
 
 KEYWORDS = {
@@ -173,6 +177,10 @@ KEYWORDS = {
     "month": TokenType.MONTH,
     "day": TokenType.DAY,
     "clock": TokenType.CLOCK,
+    # 快照管理
+    "snapshot": TokenType.SNAPSHOT,
+    "snapshots": TokenType.SNAPSHOTS,
+    "restore": TokenType.RESTORE,
 }
 
 

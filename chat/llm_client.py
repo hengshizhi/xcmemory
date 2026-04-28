@@ -1,19 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 OpenAI 兼容 LLM 客户端
-
-支持 OpenAI / DeepSeek / OpenRouter 等兼容 API 的流式调用。
 """
 
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 import httpx
 from openai import AsyncOpenAI
 
 
 class LLMClient:
-    """OpenAI 兼容 LLM 客户端"""
-
     def __init__(
         self,
         base_url: str,
@@ -33,38 +29,8 @@ class LLMClient:
         self.temperature = temperature
         self.timeout = timeout
 
-    async def stream(self, messages: list[dict]) -> AsyncIterator[str]:
-        """
-        流式调用 LLM，逐 token 返回。
-
-        Args:
-            messages: OpenAI 格式的消息列表
-
-        Yields:
-            每个 token 字符串
-        """
-        stream = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            stream=True,
-        )
-
-        async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
-
     async def complete(self, messages: list[dict]) -> str:
-        """
-        非流式调用，返回完整响应。
-
-        Args:
-            messages: OpenAI 格式的消息列表
-
-        Returns:
-            完整的响应文本
-        """
+        """非流式调用。"""
         resp = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
@@ -73,3 +39,36 @@ class LLMClient:
             stream=False,
         )
         return resp.choices[0].message.content if resp.choices else ""
+
+    async def complete_with_thinking(self, messages: list[dict]) -> tuple[str, str]:
+        """
+        非流式 + 思考模式。返回 (reasoning_content, content)。
+        """
+        resp = await self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            stream=False,
+            extra_body={"thinking": {"type": "enabled"}},
+        )
+        if not resp.choices:
+            return "", ""
+        msg = resp.choices[0].message
+        return (
+            getattr(msg, "reasoning_content", "") or "",
+            msg.content or "",
+        )
+
+    async def stream(self, messages: list[dict]) -> AsyncIterator[str]:
+        """流式调用。"""
+        s = await self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            stream=True,
+        )
+        async for chunk in s:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content

@@ -390,6 +390,17 @@ class Interpreter:
         """执行 DELETE"""
         mem = self._get_memory_system()
 
+        # 无条件全量删除：直接用 clear() 确保 ChromaDB + SQLite 同步清理
+        if not stmt.conditions:
+            count = mem.count()
+            mem.clear()
+            return QueryResult(
+                type="delete",
+                affected_rows=count,
+                memory_ids=[],
+                message=f"Deleted {count} memories (full clear)",
+            )
+
         # 先查询要删除的记忆
         select_result = self._execute_select(SelectStatement(
             fields=["id"],

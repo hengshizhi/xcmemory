@@ -1,0 +1,44 @@
+# ── 用户设置 ──
+[user]
+# 你的名字，会作为与 LLM 对话时的身份标识
+name = "user"
+
+# ── 星辰记忆数据库 ──
+[memory]
+# HTTP API 地址
+base_url = "http://127.0.0.1:8080"
+# API Key（从星辰记忆服务器获取）
+api_key = ""
+# 记忆系统名称已移至角色卡 YAML 的 system_name 字段
+
+# ── LLM（OpenAI 兼容）──
+[llm]
+# OpenAI / DeepSeek / OpenRouter 等
+base_url = "https://api.deepseek.com"
+api_key = ""
+model = "deepseek-v4-flash"
+# 对话最大 token
+max_tokens = 2048
+temperature = 0.8
+
+# ── 思考/记忆设置 ──
+[monologue]
+# 思考风格: "inner_os" = 角色沉浸式内心独白, "no_inner_os" = 分析性思考
+thinking_style = "inner_os"
+# 触发回忆的关键词列表
+recall_triggers = ["回忆一下", "回忆", "回想", "记忆中"]
+# 触发记忆写入的关键词列表
+remember_triggers = ["记住", "记住这个", "铭记", "记下来", "要记得"]
+# 思考最大段数（显示截断）
+max_segments = 50
+# 思维链循环最大轮数（关键词触发 → 注入 → 再推理）
+max_think_rounds = 5
+# 记忆召回的 top_k
+recall_top_k = 5
+# 对话前预检索 top_k
+prefetch_top_k = 3
+
+# ── 角色卡 ──
+[character]
+# 默认角色卡路径（相对于 characters/ 目录）
+default = "example"

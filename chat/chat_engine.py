@@ -1,16 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-对话引擎 — 核心模块
+对话引擎
 
-管理对话流程、自白过程、记忆系统集成。
-
-核心流程：
-1. 用户输入 → 轻度记忆检索（prefetch）
-2. 构建 Prompt（角色卡 + 记忆上下文 + 对话历史 + 自白指令）
-3. LLM 流式生成自白 + 回复
-4. 自白按换行分段，逐段检测记忆触发词
-5. 触发时暂停输出，调用记忆系统，结果注入自白
-6. 继续输出直到自白结束
+架构：
+1. 记忆管家：对话上下文 + 已知记忆 → 生成查询 → 检索 → 加工转述
+2. 扮演 LLM：角色卡 + 记忆转述 + 最近 4 轮对话 + 本次用户输入 → 流式回复
+3. 记忆写入：对话后提取实证信息 → 逐条保存
 """
 
 import re
@@ -20,7 +15,7 @@ from typing import AsyncIterator, Optional
 
 from character_card import CharacterCard
 from llm_client import LLMClient
-from memory_client import MemoryClient, NLQueryResult
+from memory_client import MemoryClient
 
 
 # ============================================================================
@@ -28,156 +23,77 @@ from memory_client import MemoryClient, NLQueryResult
 # ============================================================================
 
 class EventType(str, Enum):
-    """流式输出事件类型"""
-    MONOLOGUE_START = "monologue_start"     # 自白开始
-    MONOLOGUE_SEGMENT = "monologue_segment"  # 自白段落
-    MEMORY_RECALL = "memory_recall"          # 记忆召回结果
-    MEMORY_WRITE = "memory_write"            # 记忆写入确认
-    MONOLOGUE_END = "monologue_end"          # 自白结束
-    REPLY_SEGMENT = "reply_segment"          # 回复片段
-    REPLY_END = "reply_end"                  # 回复结束
-    ERROR = "error"                          # 错误
+    MEMORY_QUERY = "memory_query"
+    MEMORY_RESULT = "memory_result"
+    MEMORY_SAVE = "memory_save"
+    REPLY_SEGMENT = "reply_segment"
+    REPLY_END = "reply_end"
+    ERROR = "error"
 
 
 @dataclass
 class ChatEvent:
-    """对话事件"""
     type: EventType
     text: str = ""
     data: Optional[dict] = None
 
 
 # ============================================================================
-# System Prompt 模板
+# 记忆管家 Prompts
 # ============================================================================
 
-SYSTEM_PROMPT_TEMPLATE = """\
-{character_section}
+QUERY_GEN_PROMPT = """根据对话上下文和已知记忆，从用户最新消息中提取需要检索的疑问，生成查询。每个查询必须以问号或疑问词结尾。
+不需要检索时输出「无」。
 
-## ⛔ 必须先自白再回复（最高优先级）
-你的每次回复都**必须**以 <monologue>...</monologue> 开头，然后才能输出 <reply>...</reply>。
+对话上下文：
+{context}
 
-**为什么自白必不可少？**
-自白是你**处理记忆的唯一途径**。你在自白中用「记住」写入记忆、用「回忆一下」检索记忆。如果跳过自白直接回复，系统**
-没有机会**帮你写入或回忆任何信息——对方告诉你的事情会被永远遗忘。
+已知记忆：
+{known}
 
-❌ 错误（直接回复，没有自白会导致记忆丢失）：
-<reply>嗯，记住了。原来我是18岁的女性。</reply>
+用户最新消息：{query}
 
-✅ 正确（先自白处理记忆，再回复）：
-<monologue>
-记住我是18岁的女性
-对方告诉我这是我的基本信息，先记下来。
-</monologue>
-嗯，记住了。原来我是18岁的女性。
+查询词："""
 
-即使回复只有两个字（"好的""嗯"），也要先写自白。不写自白 = 放弃记忆。
 
-## 记忆能力
-你拥有记忆系统，可以在自白中使用：
-- 「回忆一下」+ 你想回忆的内容 → 系统会帮你检索相关记忆
-- 「记住」+ 你要记住的内容 → 系统会帮你写入记忆
+PARAPHRASE_PROMPT = """根据已知信息和用户的问题，用第二人称「你」生成角色已知事实的转述。
+如果没有任何已知信息，输出「无」。
 
-## 输出格式（严格遵守）
-你的输出分为两部分：
-1. 自白：用 <monologue>...</monologue> 标签包裹，是内心思考过程
-   - 每一段用换行分隔
-   - 需要记忆操作时，在段落中写「回忆一下」或「记住」
-2. 回复：**自白之后的所有文本**就是你对用户说的话
-   - **不需要任何标签包裹**，直接写自然对话
-   - 不要在回复中用「记住」「回忆一下」
+用户问题：{query}
 
-示例：
-<monologue>
-记住绯绯喜欢咖啡
-他提过好几次，看来是真喜欢。
-</monologue>
-嗯，我记得，你确实很喜欢咖啡。明天要不要一起去那家新开的店？
+已知信息：
+{known}
 
-## ⚠️ 硬性规则：记忆操作只能在自白中使用
-「记住」和「回忆一下」只能出现在 <monologue>...</monologue> 内部。
-自白外的回复文本中严禁出现这些指令。
+转述（第二人称）："""
 
-❌ 错误：自白外用「记住绯绯喜欢咖啡」我们明天见。
-✅ 正确：
-<monologue>
-记住绯绯喜欢咖啡
-</monologue>
-嗯，我记住了。我们明天见。
-
-## 记忆上下文
-以下是当前相关的记忆：
-{memory_context}
-"""
 
 # ============================================================================
-# 引导模式 Prompt 模板
+# 记忆写入 Prompt
 # ============================================================================
 
-ONBOARDING_SYSTEM_PROMPT_TEMPLATE = """\
-{character_section}
+EXTRACT_FACTS_PROMPT = """从对话中提取具有长期价值的实证信息，用第一人称「我」的视角，以一段连贯的话表述，不要分点列条。
+注意人称转换：对方说的「你」→「我」，对方说的「我」→角色名「绯绯」。
+包括：身份、关系、性格、喜好、约定、事件、世界知识。
+排除以下短暂无价值信息：表情动作（笑、愣、抱、点头等）、语气描写、临时情绪、对话流程描述。
+没有可保存的信息时输出「无」。
 
-## ⛔ 必须先自白再回复（最高优先级）
-你的每次回复都**必须**以 <monologue>...</monologue> 开头，然后才能输出 <reply>...</reply>。
+对话：
+{conversation}
 
-**为什么自白必不可少？**
-自白是你**建立记忆的唯一途径**。你现在没有任何记忆，需要通过自白中的「记住」把对方告诉你的信息写入记忆系统。
-如果跳过自白直接回复，系统**没有机会**帮你写入信息——对方刚刚告诉你的关于你的一切会被永远遗忘。
-**不写自白 = 放弃记忆 = 你永远不知道自己是谁。**
+陈述："""
 
-❌ 错误（直接回复会导致信息丢失）：
-<reply>嗯，记住了。原来我是18岁的女性。</reply>
 
-✅ 正确（先自白记住信息，再回应对方）：
-<monologue>
-记住我是18岁的女性
-记住我的性格是理论探索者和旅行者思维
-对方在帮我建立自我认知，每一条都要认真记下来。
-</monologue>
-嗯，记住了。原来我是18岁的女性。
+# ============================================================================
+# 扮演 LLM 系统提示
+# ============================================================================
 
-即使回复只有两个字，也要先写自白。**不写自白 = 放弃记忆。**
+ROLEPLAY_SYSTEM_TEMPLATE = """你是{name}。你正在与{user_name}对话。
+{card}
 
-## 当前状态
-你刚刚诞生，还没有任何记忆。现在正与 {user_name} 进行第一次对话。
-你需要通过与 {user_name} 的交流，逐步了解自己是谁、有什么经历、喜欢什么、不喜欢什么。
+已知信息：
+{memory}
 
-## 记忆能力
-你拥有记忆系统，可以在自白中使用：
-- 「记住」+ 你要记住的内容 → 系统会帮你写入记忆
-
-在引导阶段，务必在自白中**主动用「记住」**写入重要信息。
-例如，当 {user_name} 告诉你一些关于你的事情时，在自白中写：
-「记住我{{一些关于自己的信息}}」
-
-## 输出格式（严格遵守）
-你的输出分为两部分：
-1. 自白：用 <monologue>...</monologue> 标签包裹，是内心思考过程
-   - 每一段用换行分隔
-   - 获得新认知时用「记住」写入记忆
-2. 回复：**自白之后的所有文本**就是你对用户说的话
-   - **不需要任何标签包裹**，直接写自然对话
-   - 不要在回复中用「记住」（那是自白中的指令）
-
-## ⚠️ 硬性规则：记忆操作只能在自白中使用
-「记住」只能出现在 <monologue>...</monologue> 内部。
-自白外的回复文本中严禁出现「记住」。
-
-❌ 错误：自白外用「记住我是星织，有个哥哥叫绯绯」
-✅ 正确：
-<monologue>记住我是星织，有个哥哥叫绯绯</monologue>
-嗯，我记住了。原来我有个哥哥叫绯绯。
-
-## 引导目标
-通过对话逐步了解自己，包括但不限于：
-- 你的身份和背景
-- 你的性格特点和喜好
-- 你过去的经历
-- 你与他人的关系
-- 你的知识和技能
-
-每次获得新的自我认知时，在自白中用「记住」写入记忆系统。而回复中只需要自然对话。
-"""
+【最高指令】你的任何回答必须基于以上「已知信息」。如果已知信息中不包含回答所需的内容，你只能回答「我不记得」「我不确定」「我不知道」，严禁编造任何事实。"""
 
 
 # ============================================================================
@@ -185,8 +101,6 @@ ONBOARDING_SYSTEM_PROMPT_TEMPLATE = """\
 # ============================================================================
 
 class ChatEngine:
-    """对话引擎：管理对话流程、自白过程、记忆集成"""
-
     def __init__(
         self,
         character: CharacterCard,
@@ -201,377 +115,138 @@ class ChatEngine:
         self.config = config
         self.user_name = user_name
         self.history: list[dict] = []
+        self.known_memories: list[str] = []
 
-        # 自白配置
         mono_cfg = config.get("monologue", {})
-        self.recall_triggers: list[str] = mono_cfg.get("recall_triggers", [
-            "回忆一下", "回忆", "记得", "记忆中", "之前",
-        ])
-        self.remember_triggers: list[str] = mono_cfg.get("remember_triggers", [
-            "记住", "记住这个", "铭记", "记下来", "要记得",
-        ])
-        self.max_segments: int = mono_cfg.get("max_segments", 20)
         self.recall_top_k: int = mono_cfg.get("recall_top_k", 5)
-        self.prefetch_top_k: int = mono_cfg.get("prefetch_top_k", 3)
 
-    # ── Prompt 构建 ─────────────────────────────────────────
+    # ── 记忆管家 ───────────────────────────────────────────
 
-    def _build_system_prompt(self, memory_context: str) -> str:
-        """构建系统 prompt"""
-        return SYSTEM_PROMPT_TEMPLATE.format(
-            character_section=self.character.get_system_prompt_section(),
-            memory_context=memory_context,
-        )
+    async def _memory_manager(self, user_input: str) -> AsyncIterator[ChatEvent]:
+        yield ChatEvent(type=EventType.MEMORY_QUERY, text="🔍 记忆管家分析中...")
 
-    def _build_onboarding_system_prompt(self) -> str:
-        """构建引导模式的系统 prompt"""
-        return ONBOARDING_SYSTEM_PROMPT_TEMPLATE.format(
-            character_section=self.character.get_system_prompt_section(),
-            user_name=self.user_name,
-        )
+        # 上下文与扮演 LLM 同步（最近 4 轮）
+        ctx = []
+        for msg in self.history[-8:]:
+            role = self.character.name if msg["role"] == "assistant" else self.user_name
+            ctx.append(f"{role}: {msg['content'][:200]}")
+        context = "\n".join(ctx) if ctx else "（无）"
+        known_text = "\n".join(f"- {k}" for k in self.known_memories) if self.known_memories else "（无）"
+
+        # Step 1: 生成查询
+        queries_text = await self.llm.complete([
+            {"role": "user", "content": QUERY_GEN_PROMPT.format(
+                context=context, known=known_text, query=user_input)},
+        ])
+        queries_text = queries_text.strip()
+        if "查询词：" in queries_text:
+            queries_text = queries_text.split("查询词：", 1)[1]
+        queries_text = queries_text.strip()
+        queries = [q.strip() for q in queries_text.split("\n") if q.strip() and q.strip() != "无"]
+        yield ChatEvent(type=EventType.MEMORY_QUERY, text=f"查询: {' '.join(queries) if queries else '(空)'}")
+
+        # Step 2: 执行查询
+        new_items = []
+        if queries:
+            combined = " ".join(queries)
+            result = await self.memory.nl_query(combined, top_k=self.recall_top_k)
+            if result.type != "error" and result.results:
+                for mem in result.results[:10]:
+                    c = mem.get("content", "") or mem.get("query_sentence", "")
+                    if c and c not in self.known_memories and c not in new_items:
+                        new_items.append(c)
+
+        if new_items:
+            self.known_memories.extend(new_items)
+            if len(self.known_memories) > 30:
+                self.known_memories = self.known_memories[-30:]
+
+        # Step 3: 生成转述
+        known_text = "\n".join(f"- {k}" for k in self.known_memories) if self.known_memories else "（无）"
+        paraphrase = await self.llm.complete([
+            {"role": "user", "content": PARAPHRASE_PROMPT.format(
+                query=user_input, known=known_text)},
+        ])
+        paraphrase = paraphrase.strip()
+        if paraphrase and paraphrase != "无":
+            yield ChatEvent(type=EventType.MEMORY_RESULT, text=paraphrase)
+
+    # ── 构建扮演 messages ──────────────────────────────────
 
     def _build_messages(self, user_input: str, memory_context: str) -> list[dict]:
-        """构建完整的 messages 列表"""
         messages = [
-            {"role": "system", "content": self._build_system_prompt(memory_context)},
+            {
+                "role": "system",
+                "content": ROLEPLAY_SYSTEM_TEMPLATE.format(
+                    name=self.character.name,
+                    user_name=self.user_name,
+                    card=self.character.get_system_prompt_section(),
+                    memory=memory_context or "无",
+                ),
+            },
         ]
-        # 加入对话历史
-        messages.extend(self.history)
-        # 加入当前用户输入
+        messages.extend(self.history[-8:])
         messages.append({"role": "user", "content": user_input})
         return messages
 
-    def _build_onboarding_messages(self, user_input: str) -> list[dict]:
-        """构建引导模式的 messages 列表"""
-        messages = [
-            {"role": "system", "content": self._build_onboarding_system_prompt()},
-        ]
-        messages.extend(self.history)
-        messages.append({"role": "user", "content": user_input})
-        return messages
-
-    # ── 记忆上下文 ──────────────────────────────────────────
-
-    async def _get_memory_context(self, user_input: str) -> str:
-        """
-        获取与当前对话相关的记忆上下文（对话前轻度检索）。
-        """
-        result = await self.memory.nl_query(user_input, top_k=self.prefetch_top_k)
-
-        if result.type == "error":
-            return "（记忆系统暂时不可用）"
-
-        if not result.results:
-            return "（暂无相关记忆）"
-
-        lines = []
-        for i, mem in enumerate(result.results[:self.prefetch_top_k], 1):
-            content = mem.get("content", "") or mem.get("query_sentence", "")
-            if content:
-                lines.append(f"{i}. {content}")
-
-        return "\n".join(lines) if lines else "（暂无相关记忆）"
-
-    # ── 触发词检测 ──────────────────────────────────────────
-
-    def _is_recall_trigger(self, segment: str) -> bool:
-        """检测段落是否包含回忆触发词"""
-        return any(t in segment for t in self.recall_triggers)
-
-    def _is_remember_trigger(self, segment: str) -> bool:
-        """检测段落是否包含记忆写入触发词"""
-        return any(t in segment for t in self.remember_triggers)
-
-    def _is_meaningful_write(self, extracted_text: str) -> bool:
-        """过滤假阳性：提取出的文本必须有实质内容，不能只是「了」「啦」等语气词"""
-        stripped = extracted_text.strip()
-        # 去掉「记住:」前缀后判断
-        if stripped.startswith("记住:") or stripped.startswith("记住："):
-            stripped = stripped[3:].strip()
-        if len(stripped) < 2:
-            return False
-        # 纯语气词/标点
-        particles = {"了", "啦", "哦", "啊", "嗯", "呢", "吧", "吗", "呀", "嘛", "哈"}
-        if stripped in particles:
-            return False
-        return True
-
-    def _extract_query_text(
-        self, segment: str, triggers: list[str], keep_trigger_prefix: bool = False
-    ) -> str:
-        """
-        提取触发词后面的内容作为查询文本。
-
-        例如：「回忆一下上次和绯绯的约定」→「上次和绯绯的约定」
-        如果 keep_trigger_prefix=True →「回忆一下: 上次和绯绯的约定」
-        """
-        for trigger in sorted(triggers, key=len, reverse=True):
-            if trigger in segment:
-                idx = segment.index(trigger) + len(trigger)
-                query = segment[idx:].strip()
-                # 去掉首尾标点/括号/残留标签字符
-                query = re.sub(r"^[，。、：:！!？?\s「」『』""''<>/]+", "", query)
-                query = re.sub(r"[，。、：:！!？?\s「」『』""''<>/]+$", "", query)
-                if query and keep_trigger_prefix:
-                    return f"{trigger}: {query}"
-                return query if query else segment
-        return segment
-
-    # ── 引导模式 ────────────────────────────────────────────
-
-    async def onboarding_chat(self, user_input: str) -> AsyncIterator[ChatEvent]:
-        """
-        引导模式对话：角色通过与用户交流，逐步了解自己并写入记忆。
-
-        流程与普通对话相同，但使用引导模式的 system prompt，
-        且不检索记忆上下文（因为还没有记忆）。
-        """
-        messages = self._build_onboarding_messages(user_input)
-        async for event in self._stream_and_process(messages):
-            yield event
-
-    # ── 核心对话流程 ────────────────────────────────────────
+    # ── 对话入口 ────────────────────────────────────────────
 
     async def chat(self, user_input: str) -> AsyncIterator[ChatEvent]:
-        """
-        处理一条用户输入，流式返回事件。
-
-        流程：
-        1. 预检索记忆上下文
-        2. 构建 prompt
-        3. 流式生成自白 + 回复
-        4. 自白中检测触发词，触发记忆操作
-        """
-        # 1. 预检索记忆上下文
-        memory_context = await self._get_memory_context(user_input)
-
-        # 2. 构建 messages
-        messages = self._build_messages(user_input, memory_context)
-
-        # 3. 流式处理
-        async for event in self._stream_and_process(messages):
-            yield event
-
-    async def _stream_and_process(
-        self, messages: list[dict]
-    ) -> AsyncIterator[ChatEvent]:
-        """流式处理 LLM 输出，含自白分段和记忆触发"""
-        buffer = ""
-        in_monologue = False
-        monologue_started = False
-        monologue_ended = False       # </monologue> 已闭合，之后都是回复
-        segment_count = 0
-        full_reply = ""
-
+        # 1. 记忆管家
+        memory_text = ""
         try:
-            async for token in self.llm.stream(messages):
-                buffer += token
-
-                # ── 自白开始 ──
-                if not monologue_ended and "<monologue>" in buffer:
-                    in_monologue = True
-                    monologue_started = True
-                    buffer = buffer.replace("<monologue>", "")
-                    yield ChatEvent(type=EventType.MONOLOGUE_START)
-
-                # ── 自白结束 ──
-                if in_monologue and "</monologue>" in buffer:
-                    text_before = buffer.replace("</monologue>", "")
-                    if text_before.strip():
-                        async for evt in self._process_monologue_segment(
-                            text_before.strip(), segment_count
-                        ):
-                            yield evt
-                            segment_count += 1
-                    in_monologue = False
-                    monologue_ended = True
-                    buffer = ""
-                    yield ChatEvent(type=EventType.MONOLOGUE_END)
-                    continue
-
-                # ── 向后兼容：仍识别 <reply> 标签 ──
-                if "<reply>" in buffer:
-                    buffer = buffer.replace("<reply>", "")
-                if "</reply>" in buffer:
-                    text_before = buffer.replace("</reply>", "")
-                    if text_before:
-                        full_reply += text_before
-                        yield ChatEvent(type=EventType.REPLY_SEGMENT, text=text_before)
-                    buffer = ""
-                    yield ChatEvent(type=EventType.REPLY_END)
-                    continue
-
-                # ── 自白段落处理（按换行分段）──
-                if in_monologue and "\n" in buffer:
-                    segments = buffer.split("\n")
-                    # 最后一段可能不完整，保留
-                    for seg in segments[:-1]:
-                        seg = seg.strip()
-                        if not seg:
-                            continue
-
-                        async for evt in self._process_monologue_segment(
-                            seg, segment_count
-                        ):
-                            yield evt
-                        segment_count += 1
-
-                        # 防死循环
-                        if segment_count >= self.max_segments:
-                            yield ChatEvent(
-                                type=EventType.ERROR,
-                                text="⚠️ 自白段数超过上限，强制结束",
-                            )
-                            break
-
-                    buffer = segments[-1]
-
-                # ── 回复直接输出（</monologue> 之后的所有文本）──
-                elif monologue_ended and not in_monologue:
-                    full_reply += buffer
-                    yield ChatEvent(type=EventType.REPLY_SEGMENT, text=buffer)
-                    buffer = ""
-
+            async for event in self._memory_manager(user_input):
+                if event.type == EventType.MEMORY_RESULT:
+                    memory_text = event.text
+                yield event
         except Exception as e:
-            yield ChatEvent(type=EventType.ERROR, text=f"LLM 调用错误: {e}")
+            yield ChatEvent(type=EventType.ERROR, text=f"记忆管家错误: {e}")
 
-        # ── 流结束后：输出 buffer 残留的回复文本 ──
-        if monologue_ended and buffer.strip():
-            full_reply += buffer.strip()
-            yield ChatEvent(type=EventType.REPLY_SEGMENT, text=buffer.strip())
+        # 2. 扮演 LLM
+        messages = self._build_messages(user_input, memory_text)
+        try:
+            full_reply = ""
+            async for token in self.llm.stream(messages):
+                full_reply += token
+                yield ChatEvent(type=EventType.REPLY_SEGMENT, text=token)
+        except Exception as e:
+            yield ChatEvent(type=EventType.ERROR, text=f"LLM 错误: {e}")
+        yield ChatEvent(type=EventType.REPLY_END)
 
-        # 如果完全没有任何输出（LLM 返回空）
-        if not monologue_started and not full_reply.strip():
-            yield ChatEvent(type=EventType.ERROR, text="LLM 未返回内容，请重试")
-
-        # 结束回复
-        if monologue_started:
-            yield ChatEvent(type=EventType.REPLY_END)
-
-        # 如果 LLM 没有输出标签格式（降级处理）
-        if not monologue_started and buffer.strip():
-            full_reply = buffer.strip()
-            yield ChatEvent(type=EventType.REPLY_SEGMENT, text=full_reply)
-            yield ChatEvent(type=EventType.REPLY_END)
-
-        # ── 回复兜底扫描：检测是否误将「记住」写入了 reply ──
-        if full_reply.strip():
-            for line in full_reply.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                if self._is_remember_trigger(line):
-                    write_text = self._extract_query_text(
-                        line, self.remember_triggers, keep_trigger_prefix=True
-                    )
-                    if not self._is_meaningful_write(write_text):
-                        continue
-                    yield ChatEvent(
-                        type=EventType.MEMORY_WRITE,
-                        text=f"📝 记住（回复兜底）: {write_text}",
-                    )
-                    result = await self.memory.nl_query(write_text, top_k=1)
-                    if result.type == "error":
-                        confirm = f"（记忆写入失败: {result.response}）"
-                    elif result.writes > 0:
-                        confirm = "（已记住）"
-                    else:
-                        confirm = f"（记忆未写入: API 返回 type={result.type}）"
-                    yield ChatEvent(
-                        type=EventType.MONOLOGUE_SEGMENT,
-                        text=confirm,
-                    )
-
-        # 保存对话历史
-        # 注意：在 _stream_and_process 中无法获取 user_input，
-        # 调用方需要自行调用 save_to_history
-        if full_reply.strip():
-            self._last_reply = full_reply.strip()
+        # 3. 记忆写入
+        reply_text = full_reply.strip()
+        conversation = f"{self.user_name}: {user_input}\n{self.character.name}: {reply_text}"
+        facts_text = await self.llm.complete([
+            {"role": "user", "content": EXTRACT_FACTS_PROMPT.format(conversation=conversation)},
+        ])
+        facts = [f.strip() for f in facts_text.split("\n") if f.strip() and f.strip() != "无"]
+        if facts:
+            saved = 0
+            for fact in facts:
+                result = await self.memory.nl_query(f"记住: {fact}", top_k=1)
+                if result.type == "write_only":
+                    saved += 1
+            preview = "；".join(facts[:3])
+            if len(facts) > 3:
+                preview += "…"
+            yield ChatEvent(
+                type=EventType.MEMORY_SAVE,
+                text=f"已写入 {saved}/{len(facts)} 条 ({preview})",
+            )
         else:
-            self._last_reply = ""
+            yield ChatEvent(type=EventType.MEMORY_SAVE, text="未提取到可保存的记忆")
+
+        self._last_reply = reply_text
+
+    # ── 历史 ────────────────────────────────────────────────
 
     def save_to_history(self, user_input: str):
-        """保存一轮对话到历史"""
         self.history.append({"role": "user", "content": user_input})
         if hasattr(self, "_last_reply") and self._last_reply:
             self.history.append({"role": "assistant", "content": self._last_reply})
-
-        # 控制历史长度（保留最近 20 轮）
-        max_history = 40
-        if len(self.history) > max_history:
-            self.history = self.history[-max_history:]
-
-    async def _process_monologue_segment(
-        self, segment: str, segment_idx: int
-    ) -> AsyncIterator[ChatEvent]:
-        """
-        处理自白中的一个段落：输出文本 + 检测触发词 + 记忆操作。
-        """
-        # 先输出段落文本
-        yield ChatEvent(type=EventType.MONOLOGUE_SEGMENT, text=segment)
-
-        # 检测回忆触发
-        if self._is_recall_trigger(segment):
-            query_text = self._extract_query_text(segment, self.recall_triggers)
-            yield ChatEvent(
-                type=EventType.MEMORY_RECALL,
-                text=f"🔍 回忆: {query_text}",
-            )
-
-            result = await self.memory.nl_query(query_text, top_k=self.recall_top_k)
-
-            if result.type == "error":
-                recall_text = f"（回忆失败: {result.response}）"
-            elif result.results:
-                # 提取记忆内容
-                memory_lines = []
-                for i, mem in enumerate(result.results[:self.recall_top_k], 1):
-                    content = mem.get("content", "") or mem.get("query_sentence", "")
-                    if content:
-                        memory_lines.append(content)
-                recall_text = f"（回忆起：{'；'.join(memory_lines)}）"
-            else:
-                recall_text = "（没有找到相关记忆）"
-
-            yield ChatEvent(
-                type=EventType.MONOLOGUE_SEGMENT,
-                text=recall_text,
-            )
-
-        # 检测记忆写入触发
-        elif self._is_remember_trigger(segment):
-            write_text = self._extract_query_text(
-                segment, self.remember_triggers, keep_trigger_prefix=True
-            )
-            if not self._is_meaningful_write(write_text):
-                # 假阳性（如"记住了。"）→ 不触发
-                yield ChatEvent(type=EventType.MONOLOGUE_SEGMENT, text=segment)
-                return
-            yield ChatEvent(
-                type=EventType.MEMORY_WRITE,
-                text=f"📝 记住: {write_text}",
-            )
-
-            result = await self.memory.nl_query(write_text, top_k=1)
-
-            if result.type == "error":
-                confirm_text = f"（记忆写入失败: {result.response}）"
-            elif result.writes > 0:
-                confirm_text = "（已记住）"
-            else:
-                confirm_text = f"（记忆未写入: API 返回 type={result.type}）"
-
-            yield ChatEvent(
-                type=EventType.MONOLOGUE_SEGMENT,
-                text=confirm_text,
-            )
-
-    # ── 辅助方法 ────────────────────────────────────────────
+        if len(self.history) > 40:
+            self.history = self.history[-40:]
 
     def clear_history(self):
-        """清除对话历史"""
         self.history = []
-
-    def get_history_length(self) -> int:
-        """获取对话历史轮数"""
-        return len(self.history) // 2
+        self.known_memories = []

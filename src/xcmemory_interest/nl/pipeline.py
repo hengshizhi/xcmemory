@@ -503,51 +503,80 @@ class NLPipeline:
     def _dedup_writes(
         self, write_mql_script: str, steps_summary: list[str]
     ) -> str:
-        """去重：解析每条 INSERT 的六槽，查询已有记忆，跳过近重复写入。
+        """去重：基于 content 文本相似度判断重复写入。
         
-        距离阈值：distance < 0.05 → 视为重复，跳过。
+        策略：
+        1. 从 MQL 中解析每条 INSERT 的 content 文本
+        2. 与数据库中所有已有记忆的 content 计算文本相似度
+        3. 相似度 > 0.82 → 视为重复，跳过
+        
+        不使用 LLM 判断，只用 stdlib difflib 做文本相似度比较。
         
         Returns:
             去重后的 MQL 脚本（空字符串表示全部被去重）
         """
-        DEDUP_DISTANCE = 0.15
-        lines = [p.strip() for p in write_mql_script.split(";") if p.strip()]
-        kept, skipped = [], []
+        from difflib import SequenceMatcher
         
-        # 快速解析 INSERT ... VALUES ('<六槽>', 'content', lifecycle) 中的 query_sentence
+        SIMILARITY_THRESHOLD = 0.82
+        lines = [p.strip() for p in write_mql_script.split(";") if p.strip()]
+        if not lines:
+            return ""
+        
+        # 解析每条 INSERT 的 (query_sentence, content, lifecycle)
         import re as _re
+        parsed = []  # [(query_sentence, content, lifecycle), ...]
         for line in lines:
-            m = _re.search(r"VALUES\s*\('(<[^>]*>(?:<[^>]*>){5})'", line, _re.IGNORECASE)
-            if not m:
-                kept.append(line)
+            m = _re.search(
+                r"VALUES\s*\('(<[^>]*>(?:<[^>]*>){5})',\s*'([^']*)',\s*(\d+)\)",
+                line, _re.IGNORECASE,
+            )
+            if m:
+                parsed.append((m.group(1), m.group(2), int(m.group(3)), line))
+            else:
+                # 无法解析的 INSERT 直接保留（不阻塞写入）
+                parsed.append(("", "", 0, line))
+        
+        # 批量读取数据库所有已有 content（去重仅需 content 字段）
+        existing_contents = []
+        try:
+            all_ids = self.mem.list_all_memory_ids()
+            for mid in all_ids:
+                mem = self.mem.get_memory(mid)
+                if mem and mem.content:
+                    existing_contents.append(mem.content)
+        except Exception:
+            pass  # 查询失败不阻塞写入
+        
+        kept, skipped = [], []
+        for qs, content, lifecycle, orig_line in parsed:
+            if not content:
+                kept.append(orig_line)
                 continue
             
-            query_sentence = m.group(1)
-            slots = _re.findall(r"<([^>]*)>", query_sentence)
-            if len(slots) != 6:
-                kept.append(line)
-                continue
+            # 与已有 content 逐一比对相似度
+            dup_found = False
+            content_clean = content.strip()
+            for existing in existing_contents:
+                existing_clean = existing.strip()
+                # 快速路径：完全一致
+                if content_clean == existing_clean:
+                    dup_found = True
+                    break
+                # 长度差异过大直接跳过
+                if max(len(content_clean), len(existing_clean)) > 0:
+                    len_ratio = min(len(content_clean), len(existing_clean)) / max(len(content_clean), len(existing_clean))
+                    if len_ratio < 0.5:
+                        continue
+                # 文本相似度
+                ratio = SequenceMatcher(None, content_clean, existing_clean).ratio()
+                if ratio >= SIMILARITY_THRESHOLD:
+                    dup_found = True
+                    break
             
-            slot_names = ["scene", "subject", "action", "object", "purpose", "result"]
-            query_slots = {name: val for name, val in zip(slot_names, slots) if val != "无" and val}
-            
-            if not query_slots:
-                kept.append(line)
-                continue
-            
-            try:
-                results = self.mem.search_subspace(query_slots, top_k=2)
-                dup_found = False
-                for r in results:
-                    if r.distance < DEDUP_DISTANCE:
-                        dup_found = True
-                        break
-                if dup_found:
-                    skipped.append(line[:80])
-                else:
-                    kept.append(line)
-            except Exception:
-                kept.append(line)  # 查询失败不阻塞写入
+            if dup_found:
+                skipped.append(content[:60])
+            else:
+                kept.append(orig_line)
         
         if skipped:
             steps_summary.append(

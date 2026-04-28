@@ -491,13 +491,24 @@ def do_nl_query(nl_query: str, top_k: int):
                     wtype = getattr(w, "type", "?")
                     wmsg = getattr(w, "message", "")
                     wids = getattr(w, "memory_ids", [])
-                    lines.append(f"   [{wtype}] {wmsg}")
-                    if wids:
-                        lines.append(f"   记忆ID: {', '.join(wids[:3])}")
+                    if wtype == "error":
+                        lines.append(f"   ❌ 执行错误: {wmsg}")
+                    else:
+                        lines.append(f"   [{wtype}] {wmsg}")
+                        if wids:
+                            lines.append(f"   记忆ID: {', '.join(wids[:3])}")
                 lines.append("")
             else:
                 if n_writes > 0:
-                    lines.append("⚠️ 写入执行结果为空（可能 LLM 生成 MQL 失败）")
+                    lines.append("⚠️ 写入执行结果为空")
+                    # 显示诊断信息：步骤摘要 + 生成的 MQL
+                    steps = result.get("steps_summary", [])
+                    write_steps = [s for s in steps if "写入" in s or "去重" in s]
+                    if write_steps:
+                        lines.append("   诊断: " + " | ".join(write_steps[-3:]))
+                    gen_mql = result.get("mql", "")
+                    if gen_mql:
+                        lines.append(f"   MQL: {gen_mql[:200]}")
                     lines.append("")
 
         # ── 每个查询的结果 ──

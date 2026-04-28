@@ -142,6 +142,13 @@ class SystemStatement(ASTNode):
 
 
 @dataclass
+class SnapshotStatement(ASTNode):
+    """快照管理语句"""
+    action: str  # create, list, restore, delete
+    snapshot_id: str = ""  # for restore/delete
+
+
+@dataclass
 class UserStatement(ASTNode):
     """用户管理语句"""
     action: str  # create, drop, grant, revoke, list, generate_key
@@ -679,7 +686,23 @@ class Parser:
         elif self._matchAdvance(TokenType.UPDATE):
             return self._parseUpdate()
         elif self._matchAdvance(TokenType.DELETE):
+            if self._match(TokenType.SNAPSHOT):
+                self._advance()  # consume SNAPSHOT
+                snapshot_id = ""
+                if self._match(TokenType.IDENTIFIER) or self._match(TokenType.STRING):
+                    snapshot_id = self._advance().value
+                    if snapshot_id.startswith("'") or snapshot_id.startswith('"'):
+                        snapshot_id = snapshot_id[1:-1]
+                return SnapshotStatement(action="delete", snapshot_id=snapshot_id)
             return self._parseDelete()
+        elif self._matchAdvance(TokenType.RESTORE):
+            self._expect(TokenType.SNAPSHOT)
+            snapshot_id = ""
+            if self._match(TokenType.IDENTIFIER) or self._match(TokenType.STRING):
+                snapshot_id = self._advance().value
+                if snapshot_id.startswith("'") or snapshot_id.startswith('"'):
+                    snapshot_id = snapshot_id[1:-1]
+            return SnapshotStatement(action="restore", snapshot_id=snapshot_id)
         elif self._matchAdvance(TokenType.CREATE):
             return self._parseCreate()
         elif self._matchAdvance(TokenType.DROP):
@@ -938,8 +961,11 @@ class Parser:
             # CREATE USER username
             username = self._expect(TokenType.IDENTIFIER).value
             return UserStatement(action="create", username=username)
+        elif self._matchAdvance(TokenType.SNAPSHOT):
+            # CREATE SNAPSHOT
+            return SnapshotStatement(action="create")
         else:
-            raise ParseError("Expected DATABASE or USER after CREATE", self.current)
+            raise ParseError("Expected DATABASE, USER, or SNAPSHOT after CREATE", self.current)
 
     def _parseDrop(self) -> ASTNode:
         """解析 DROP 语句"""
@@ -962,8 +988,11 @@ class Parser:
         # LIST USERS
         elif self._matchAdvance(TokenType.USERS):
             return UserStatement(action="list")
+        # LIST SNAPSHOTS
+        elif self._matchAdvance(TokenType.SNAPSHOTS):
+            return SnapshotStatement(action="list")
         else:
-            raise ParseError("Expected DATABASES or USERS after LIST", self.current)
+            raise ParseError("Expected DATABASES, USERS, or SNAPSHOTS after LIST", self.current)
 
     def _parseUse(self) -> SystemStatement:
         """解析 USE 语句"""

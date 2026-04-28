@@ -64,6 +64,10 @@ DEFAULT_CONFIG = {
         "base_url": "https://openrouter.ai/api/v1",
         "model": "xiaomi/mimo-v2-flash",
     },
+    "snapshot": {
+        "write_threshold": 20,   # 每 N 次写入自动快照（0 禁用）
+        "idle_minutes": 30,      # 空闲 N 分钟后下次写入前快照（0 禁用）
+    },
 }
 
 CONFIG_FILE = Path(__file__).parent / "config.toml"

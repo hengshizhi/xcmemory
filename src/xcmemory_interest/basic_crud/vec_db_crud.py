@@ -130,6 +130,8 @@ class VecDBCRUD:
         vocab_size: int = 10000,
         archive_threshold: int = 10,
         max_versions_per_memory: int = 50,
+        snapshot_write_threshold: int = 20,
+        snapshot_idle_minutes: int = 30,
     ):
         """
         初始化 VecDBCRUD，自动创建所有数据库。
@@ -141,6 +143,8 @@ class VecDBCRUD:
             vocab_size: InterestEncoder 词汇表大小
             archive_threshold: 版本存档阈值，每 N 次更新存档一次
             max_versions_per_memory: 每条记忆最多保留的版本数
+            snapshot_write_threshold: 快照写入阈值，每 N 次写入自动快照（0 禁用）
+            snapshot_idle_minutes: 快照空闲阈值，空闲超过 N 分钟后下次写入前自动快照（0 禁用）
         """
         self.root = Path(persist_directory)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -182,8 +186,14 @@ class VecDBCRUD:
         self._archive_threshold = archive_threshold
         self._max_versions = max_versions_per_memory
 
+        # 快照参数
+        self._snapshot_write_threshold = snapshot_write_threshold
+        self._snapshot_idle_minutes = snapshot_idle_minutes
+
         # 版本管理器（懒加载）
         self._version_manager = None
+        # 快照管理器（懒加载）
+        self._snapshot_manager = None
 
     @property
     def version_manager(self):
@@ -196,6 +206,18 @@ class VecDBCRUD:
                 max_versions_per_memory=self._max_versions,
             )
         return self._version_manager
+
+    @property
+    def snapshot_manager(self):
+        """获取快照管理器（懒加载）"""
+        if self._snapshot_manager is None:
+            from ..version_control.snapshot_manager import SnapshotManager
+            self._snapshot_manager = SnapshotManager(
+                self,
+                write_threshold=self._snapshot_write_threshold,
+                idle_minutes=self._snapshot_idle_minutes,
+            )
+        return self._snapshot_manager
 
     # =========================================================================
     # KV 数据库
@@ -603,6 +625,13 @@ class VecDBCRUD:
             # 版本记录失败不影响写入
             pass
 
+        # ---- 快照检查 ----
+        if self._snapshot_write_threshold > 0 or self._snapshot_idle_minutes > 0:
+            try:
+                self.snapshot_manager.on_write()
+            except Exception:
+                pass
+
         return memory_id
 
     # =========================================================================
@@ -970,6 +999,10 @@ class VecDBCRUD:
             )
         except Exception:
             pass
+
+        # 重置快照计数器
+        if self._snapshot_manager is not None:
+            self._snapshot_manager._pending_count = 0
 
     def close(self):
         """关闭所有连接"""

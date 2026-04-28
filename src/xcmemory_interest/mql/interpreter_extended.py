@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING, Callable
 from .parser import (
     ASTNode, SelectStatement, InsertStatement,
     UpdateStatement, DeleteStatement, Condition,
-    SystemStatement, UserStatement
+    SystemStatement, UserStatement, SnapshotStatement
 )
 from .errors import ExecutionError
 from .interpreter import Interpreter, QueryResult
@@ -51,6 +51,8 @@ class InterpreterExtended(Interpreter):
             return self._execute_system(ast)
         elif isinstance(ast, UserStatement):
             return self._execute_user(ast)
+        elif isinstance(ast, SnapshotStatement):
+            return self._execute_snapshot(ast)
         return super()._execute_ast(ast)
 
     def _execute_insert(self, stmt: InsertStatement) -> QueryResult:
@@ -217,6 +219,51 @@ class InterpreterExtended(Interpreter):
         else:
             raise ExecutionError(f"Unknown user action: {stmt.action}")
 
+    def _execute_snapshot(self, stmt: SnapshotStatement) -> QueryResult:
+        """执行快照管理语句"""
+        mem = self._get_memory_system()
+
+        if stmt.action == "create":
+            sid = mem.create_snapshot(trigger_reason="manual_mql")
+            return QueryResult(
+                type="snapshot",
+                message=f"Created snapshot '{sid}'",
+                data=[{"snapshot_id": sid}],
+            )
+
+        elif stmt.action == "list":
+            snapshots = mem.list_snapshots()
+            return QueryResult(
+                type="snapshot",
+                data=snapshots,
+                message=f"Found {len(snapshots)} snapshot(s)",
+            )
+
+        elif stmt.action == "restore":
+            if not stmt.snapshot_id:
+                raise ExecutionError("RESTORE SNAPSHOT requires a snapshot ID")
+            ok = mem.restore_snapshot(stmt.snapshot_id)
+            if not ok:
+                raise ExecutionError(f"Snapshot '{stmt.snapshot_id}' not found or empty")
+            # 恢复后更新绑定
+            self.bind("mem", mem)
+            return QueryResult(
+                type="snapshot",
+                message=f"Restored to snapshot '{stmt.snapshot_id}'",
+            )
+
+        elif stmt.action == "delete":
+            if not stmt.snapshot_id:
+                raise ExecutionError("DELETE SNAPSHOT requires a snapshot ID")
+            mem.delete_snapshot(stmt.snapshot_id)
+            return QueryResult(
+                type="snapshot",
+                message=f"Deleted snapshot '{stmt.snapshot_id}'",
+            )
+
+        else:
+            raise ExecutionError(f"Unknown snapshot action: {stmt.action}")
+
 
 # 原有的 Interpreter 别名
 Interpreter = InterpreterExtended
@@ -227,9 +274,6 @@ Interpreter = InterpreterExtended
 # ============================================================================
 
 def _register_extended_statements():
-    """注册扩展语句类型"""
-    import MQL.parser as parser_module
-
-    # 添加扩展语句类型到 parser
-    # 注意：这里需要确保 parser 支持这些语句
+    """注册扩展语句类型（快照等）"""
+    # 扩展语句已通过 parser 的 parse 方法内联支持
     pass

@@ -55,7 +55,7 @@ from .lexer import Lexer, Token, TokenType, tokenize
 from .parser import (
     parse, ASTNode,
     SelectStatement, InsertStatement, UpdateStatement, DeleteStatement,
-    Condition, SystemStatement, UserStatement
+    Condition, SystemStatement, UserStatement, SnapshotStatement
 )
 from .interpreter_extended import Interpreter, QueryResult
 from .dryrun import DryRunInterpreter, DryRunMixIn
@@ -86,6 +86,7 @@ __all__ = [
     "Condition",
     "SystemStatement",
     "UserStatement",
+    "SnapshotStatement",
     # 解释器
     "Interpreter",
     "QueryResult",

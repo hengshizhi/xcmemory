@@ -44,6 +44,10 @@ def main():
         "--config", default=str(CHAT_DIR / "config.toml"),
         help="配置文件路径",
     )
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="显示记忆管家上下文等调试信息",
+    )
     args = parser.parse_args()
 
     # 1. 加载配置
@@ -97,7 +101,7 @@ def main():
 
     # 7. 启动 UI
     from ui.terminal_ui import TerminalUI
-    ui = TerminalUI(engine, character)
+    ui = TerminalUI(engine, character, debug=args.debug)
     asyncio.run(ui.run())
 
 
