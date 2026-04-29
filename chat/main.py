@@ -18,20 +18,59 @@ sys.path.insert(0, str(CHAT_DIR))
 
 
 def load_config(config_path: str) -> dict:
-    """加载 TOML 配置文件"""
+    """加载 TOML 配置文件，不存在时自动生成默认配置"""
     p = Path(config_path)
+
     if not p.exists():
-        print(f"❌ 配置文件不存在: {p}")
-        sys.exit(1)
+        _generate_default_chat_config(p)
+        print(f"[OK] 已生成默认配置文件: {p}")
 
     try:
-        # Python 3.11+ 内置 tomllib
         import tomllib
     except ImportError:
         import tomli as tomllib
 
     with open(p, "rb") as f:
         return tomllib.load(f)
+
+
+DEFAULT_CHAT_CONFIG = """# ── 用户设置 ──
+[user]
+name = "你"
+
+# ── 星辰记忆数据库 ──
+[memory]
+base_url = "http://127.0.0.1:8080"
+api_key = ""
+
+# ── LLM（OpenAI 兼容）──
+[llm]
+base_url = "https://api.deepseek.com"
+api_key = ""
+model = "deepseek-v4-flash"
+max_tokens = 2048
+temperature = 0.8
+
+# ── 思考/记忆设置 ──
+[monologue]
+thinking_style = "inner_os"
+recall_triggers = ["回忆一下", "回忆", "回想", "记忆中"]
+remember_triggers = ["记住", "记住这个", "铭记", "记下来", "要记得"]
+max_segments = 50
+max_think_rounds = 5
+recall_top_k = 5
+prefetch_top_k = 3
+
+# ── 角色卡 ──
+[character]
+default = "example"
+"""
+
+
+def _generate_default_chat_config(p: Path) -> None:
+    """生成默认 chat 配置文件"""
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(DEFAULT_CHAT_CONFIG, encoding="utf-8")
 
 
 def main():
