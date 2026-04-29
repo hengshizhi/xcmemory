@@ -72,7 +72,7 @@ class SufficiencyChecker:
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
-            max_tokens=300,
+            max_tokens=10000,
         )
 
         response_text = response.choices[0].message.content

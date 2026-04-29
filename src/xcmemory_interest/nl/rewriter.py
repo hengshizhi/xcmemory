@@ -46,7 +46,7 @@ class QueryRewriter:
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=500,
+            max_tokens=10000,
         )
 
         response_text = response.choices[0].message.content

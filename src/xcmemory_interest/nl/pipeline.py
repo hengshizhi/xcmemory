@@ -565,7 +565,7 @@ class NLPipeline:
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
-                max_tokens=512,
+                max_tokens=10000,
             )
             return resp.choices[0].message.content or "（生成失败）"
         except Exception as e:
@@ -595,7 +595,7 @@ class NLPipeline:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.0,
-                max_tokens=256,
+                max_tokens=10000,
             )
             raw = resp.choices[0].message.content or ""
             retry_tag = self._extract_tag(raw, "retry")
@@ -643,7 +643,7 @@ class NLPipeline:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.0,
-                max_tokens=256,
+                max_tokens=10000,
             )
             raw = resp.choices[0].message.content or ""
             mql_text = self._extract_tag(raw, "mql")

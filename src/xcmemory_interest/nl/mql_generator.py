@@ -63,7 +63,7 @@ class MQLGenerator:
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
-            max_tokens=1024,
+            max_tokens=10000,
         )
         raw = response.choices[0].message.content or ""
         if self.debug:

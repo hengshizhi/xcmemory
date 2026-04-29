@@ -48,7 +48,7 @@ api_key = ""
 base_url = "https://api.deepseek.com"
 api_key = ""
 model = "deepseek-v4-flash"
-max_tokens = 2048
+max_tokens = 10000
 temperature = 0.8
 
 # ── 思考/记忆设置 ──
@@ -130,7 +130,7 @@ def main():
         base_url=llm_cfg.get("base_url", "https://api.deepseek.com"),
         api_key=llm_cfg.get("api_key", ""),
         model=llm_cfg.get("model", "deepseek-v4-flash"),
-        max_tokens=llm_cfg.get("max_tokens", 2048),
+        max_tokens=llm_cfg.get("max_tokens", 10000),
         temperature=llm_cfg.get("temperature", 0.8),
     )
 
