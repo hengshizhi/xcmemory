@@ -195,6 +195,8 @@ class ChatEngine:
                         think_started = False
                     full_reply += token
                     yield ChatEvent(type=EventType.REPLY_SEGMENT, text=token)
+            if think_started:
+                yield ChatEvent(type=EventType.THINK_END)
         except Exception as e:
             yield ChatEvent(type=EventType.ERROR, text=f"LLM 错误: {e}")
         yield ChatEvent(type=EventType.REPLY_END)

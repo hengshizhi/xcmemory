@@ -453,7 +453,7 @@ class VecDBCRUD:
         cur.execute(sql, params)
         return [row[0] for row in cur.fetchall()]
 
-    def get_memory_ids_with_slot_value(
+    def get_ids_with_slot_value(
         self,
         slot: str,
         top_k: int = 100,
@@ -644,6 +644,8 @@ class VecDBCRUD:
         self,
         items: List[Dict[str, Any]],
         embedding_mode: str = EmbeddingMode.INTEREST,
+        ids: List[str] = None,
+        memory_ids: List[str] = None,  # alias for backward compat
     ) -> List[str]:
         """
         批量写入多条记忆（一次 ChromaDB add 调用完成，远快于逐条写入）。
@@ -651,14 +653,24 @@ class VecDBCRUD:
         Args:
             items: 记忆列表，每项含 {"query_sentence": str, "content": str, "lifecycle": int}
             embedding_mode: 嵌入模式
+            ids: 预分配的 memory_id 列表（长度与 items 一致），None 则自动生成
 
         Returns:
             memory_id 列表
         """
+        # 支持两种参数名
+        if memory_ids is not None:
+            ids = memory_ids
+
         if not items:
             return []
 
-        memory_ids = [f"mem_{uuid.uuid4().hex[:12]}" for _ in items]
+        if ids is not None:
+            if len(ids) != len(items):
+                raise ValueError(f"ids length ({len(ids)}) != items length ({len(items)})")
+            ids = list(ids)
+        else:
+            ids = [f"mem_{uuid.uuid4().hex[:12]}" for _ in items]
         now = datetime.now()
 
         # 1. 批量编码
@@ -685,10 +697,10 @@ class VecDBCRUD:
 
         # 2. 批量写入 6 个槽位 Collection（每槽位一次 add 调用）
         for slot_name in self.SLOT_NAMES:
-            metas = [{slot_name: all_slot_values[i][slot_name], "memory_id": memory_ids[i]} for i in range(len(items))]
+            metas = [{slot_name: all_slot_values[i][slot_name], "memory_id": ids[i]} for i in range(len(items))]
             try:
                 self._slot_collections[slot_name].add(
-                    ids=memory_ids,
+                    ids=ids,
                     embeddings=all_slot_vecs[slot_name],
                     metadatas=metas,
                 )
@@ -697,10 +709,10 @@ class VecDBCRUD:
 
         # 3. 批量写入全量 Collection
         full_vecs = all_interest_vecs if embedding_mode != EmbeddingMode.RAW else all_raw_vecs
-        full_metas = [{"memory_id": memory_ids[i], **all_slot_values[i]} for i in range(len(items))]
+        full_metas = [{"memory_id": ids[i], **all_slot_values[i]} for i in range(len(items))]
         try:
             self._full_collection.add(
-                ids=memory_ids,
+                ids=ids,
                 embeddings=[v.tolist() for v in full_vecs],
                 metadatas=full_metas,
             )
@@ -712,7 +724,7 @@ class VecDBCRUD:
         kv_rows = []
         for i in range(len(items)):
             item = items[i]
-            mid = memory_ids[i]
+            mid = ids[i]
             kv_rows.append((
                 mid, item["query_sentence"],
                 all_interest_vecs[i].tobytes(),
@@ -729,7 +741,7 @@ class VecDBCRUD:
         # 5. 批量写入槽位值反向索引
         idx_rows = []
         for i in range(len(items)):
-            mid = memory_ids[i]
+            mid = ids[i]
             item = items[i]
             sv = all_slot_values[i]
             idx_rows.append((
@@ -743,7 +755,7 @@ class VecDBCRUD:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", idx_rows)
         self._conn.commit()
 
-        return memory_ids
+        return ids
 
     # =========================================================================
     # 更新
@@ -873,30 +885,30 @@ class VecDBCRUD:
 
         return ok
 
-    def delete_batch(self, memory_ids: List[str]) -> int:
+    def delete_batch(self, ids: List[str]) -> int:
         """批量删除记忆（一次性批量操作 ChromaDB，远快于逐条删除）"""
-        if not memory_ids:
+        if not ids:
             return 0
 
         # 从 6 个槽位 Collection 批量删除
         for slot_name in self.SLOT_NAMES:
             try:
-                self._slot_collections[slot_name].delete(ids=memory_ids)
+                self._slot_collections[slot_name].delete(ids=ids)
             except Exception:
                 pass
         # 从全量 Collection 批量删除
         try:
-            self._full_collection.delete(ids=memory_ids)
+            self._full_collection.delete(ids=ids)
         except Exception:
             pass
         # 从 KV 批量删除
-        placeholders = ",".join("?" for _ in memory_ids)
+        placeholders = ",".join("?" for _ in ids)
         cur = self._conn.cursor()
-        cur.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", memory_ids)
+        cur.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", ids)
         deleted = cur.rowcount
         self._conn.commit()
         # 从槽位值索引批量删除
-        cur.execute(f"DELETE FROM slot_value_index WHERE memory_id IN ({placeholders})", memory_ids)
+        cur.execute(f"DELETE FROM slot_value_index WHERE memory_id IN ({placeholders})", ids)
         self._conn.commit()
 
         return deleted

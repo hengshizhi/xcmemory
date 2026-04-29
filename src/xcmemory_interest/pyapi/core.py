@@ -29,6 +29,7 @@ from ..embedding_coder import InterestEncoder, QueryEncoderPipeline, QuerySlots
 from ..auxiliary_query import Scheduler, TimeIndex, SlotIndex
 from ..lifecycle_manager import LifecycleManager, LIFECYCLE_INFINITY
 from ..mql import Interpreter as MQLInterpreter, QueryResult as MQLResult
+from .write_cache import WriteCache
 
 
 # ============================================================================
@@ -169,6 +170,7 @@ class MemorySystem:
         self._time_index: Optional[TimeIndex] = None
         self._slot_index: Optional[SlotIndex] = None
         self._lifecycle_mgr: Optional[LifecycleManager] = None
+        self._write_cache: Optional[WriteCache] = None
         self._initialized = False
 
     # =========================================================================
@@ -212,8 +214,21 @@ class MemorySystem:
 
         self._initialized = True
 
+        # 启动写缓存（异步刷盘）
+        self._write_cache = WriteCache(flush_interval=1.0, flush_batch_size=100)
+        self._write_cache.bind(
+            vec_db=self._vec_db,
+            time_index=self._time_index,
+            slot_index=self._slot_index,
+        )
+        self._write_cache.start()
+
     def close(self):
-        """关闭所有数据库连接"""
+        """关闭所有数据库连接（先刷盘缓存）"""
+        if self._write_cache:
+            self._write_cache.stop()
+            self._write_cache = None
+
         if self._vec_db:
             self._vec_db.close()
             self._vec_db = None
@@ -289,7 +304,7 @@ class MemorySystem:
         created_at: datetime = None,
     ) -> str:
         """
-        写入记忆
+        写入记忆（异步缓存：立即返回，后台批量落盘）
 
         Args:
             query_sentence: 查询句 "<场景><主体><动作><宾语><目的><结果>"
@@ -310,7 +325,7 @@ class MemorySystem:
         if "<" not in query_sentence:
             query_sentence = self._build_query_sentence(
                 scene_word=scene_word,
-                subject=query_sentence,  # 第一个参数当作 subject
+                subject=query_sentence,
             )
 
         # 解析槽位
@@ -325,18 +340,12 @@ class MemorySystem:
 
         # 构建槽位字典（用于 LifecycleManager）
         slot_dict = {
-            "scene": parts[0],
-            "subject": parts[1],
-            "action": parts[2],
-            "object": parts[3],
-            "purpose": parts[4],
-            "result": parts[5],
+            "scene": parts[0], "subject": parts[1], "action": parts[2],
+            "object": parts[3], "purpose": parts[4], "result": parts[5],
         }
-        # 过滤 None 值
         slot_dict = {k: v for k, v in slot_dict.items() if v}
 
-        # 如果有 LifecycleManager（无论是否启用兴趣模式），用它决定生命周期
-        # reference_duration 为 None 时 LifecycleManager 会用默认值 86400
+        # 决定生命周期
         if self._lifecycle_mgr is not None:
             decided_lifecycle = self._lifecycle_mgr.decide_new_lifecycle(
                 query_slots=slot_dict,
@@ -345,32 +354,30 @@ class MemorySystem:
         else:
             decided_lifecycle = reference_duration if reference_duration is not None else 86400
 
-        # 写入 VecDBCRUD
+        # 生成 memory_id 和向量编码（同步，~2ms GPU）
+        import uuid
+        memory_id = f"mem_{uuid.uuid4().hex[:12]}"
         embedding_mode = EmbeddingMode.INTEREST if self.enable_interest_mode else EmbeddingMode.RAW
-        memory_id = self._vec_db.write(
-            query_sentence=query_sentence,
-            content=content,
-            lifecycle=decided_lifecycle,
-            embedding_mode=embedding_mode,
-        )
-
-        # 写入时间索引
-        if scene_word_extracted:
-            self._time_index.add(
-                memory_id=memory_id,
-                time_word=scene_word_extracted,
-                created_at=created_at,
-            )
-
-        # 写入槽位索引（使用原始向量）
         slots = self._vec_db._slots_from_sentence(query_sentence)
+        interest_vec = self._vec_db.pipeline.encode(slots, use_raw=False, normalize=True)
+        raw_vec = self._vec_db.pipeline.encode(slots, use_raw=True, normalize=True)
         slot_vecs = self._vec_db.pipeline.get_slot_vectors(slots)
         slot_values = {name: parts[i] for i, name in enumerate(self._vec_db.SLOT_NAMES)}
-        self._slot_index.add(
-            memory_id=memory_id,
-            slot_vectors={k: v for k, v in slot_vecs.items() if k in slot_values},
-            slot_values=slot_values,
+
+        full_vec = interest_vec if embedding_mode != EmbeddingMode.RAW else raw_vec
+        memory = Memory(
+            id=memory_id,
+            query_sentence=query_sentence,
+            query_embedding=full_vec,
+            raw_embedding=raw_vec,
+            content=content,
+            lifecycle=decided_lifecycle,
+            created_at=created_at,
+            updated_at=created_at,
         )
+
+        # 写入缓存（延迟刷盘到 ChromaDB + SQLite + 索引）
+        self._write_cache.write(memory, slot_vecs, slot_values)
 
         return memory_id
 
@@ -380,7 +387,7 @@ class MemorySystem:
 
     def get_memory(self, memory_id: str) -> Optional[Memory]:
         """
-        根据 memory_id 获取记忆内容
+        根据 memory_id 获取记忆内容（缓存优先）
 
         Args:
             memory_id: 记忆 ID
@@ -389,11 +396,13 @@ class MemorySystem:
             Memory 对象，不存在返回 None
         """
         self._check_initialized()
+        if self._write_cache is not None:
+            return self._write_cache.read(memory_id)
         return self._vec_db._kv_read(memory_id)
 
     def get_memories(self, memory_ids: List[str]) -> Dict[str, Memory]:
         """
-        批量获取记忆
+        批量获取记忆（缓存优先）
 
         Args:
             memory_ids: 记忆 ID 列表
@@ -404,7 +413,10 @@ class MemorySystem:
         self._check_initialized()
         result = {}
         for mid in memory_ids:
-            mem = self._vec_db._kv_read(mid)
+            if self._write_cache is not None:
+                mem = self._write_cache.read(mid)
+            else:
+                mem = self._vec_db._kv_read(mid)
             if mem:
                 result[mid] = mem
         return result
@@ -540,12 +552,38 @@ class MemorySystem:
         if not self.enable_interest_mode:
             embedding_mode = EmbeddingMode.RAW
 
-        return self._vec_db.search_fullspace(
+        results = self._vec_db.search_fullspace(
             query_slots=query_slots,
             top_k=top_k,
             embedding_mode=embedding_mode,
             use_slot_rerank=use_slot_rerank,
         )
+
+        # 补充缓存中未刷盘的结果
+        if self._write_cache is not None:
+            # 构建查询向量
+            query_texts = {}
+            for s in self._vec_db.SLOT_NAMES:
+                query_texts[s] = query_slots.get(s, "")
+            q_text = "".join(f"<{query_texts[s]}>" for s in self._vec_db.SLOT_NAMES)
+            q_slots = self._vec_db._slots_from_sentence(q_text)
+            q_vec = self._vec_db.pipeline.encode(q_slots, use_raw=(embedding_mode == EmbeddingMode.RAW), normalize=True)
+
+            cached = self._write_cache.search_supplement(q_vec, top_k)
+            existing_ids = {r.memory_id for r in results}
+
+            for c in cached:
+                if c["memory_id"] not in existing_ids:
+                    results.append(SearchResult(
+                        memory_id=c["memory_id"],
+                        distance=c["distance"],
+                        metadata={},
+                    ))
+
+            results.sort(key=lambda r: r.distance)
+            results = results[:top_k]
+
+        return results
 
     def search(
         self,
@@ -932,6 +970,8 @@ class MemorySystem:
     def exists(self, memory_id: str) -> bool:
         """检查记忆是否存在"""
         self._check_initialized()
+        if self._write_cache and self._write_cache.read(memory_id):
+            return True
         return self._vec_db.exists(memory_id)
 
     def list_all_memory_ids(self) -> List[str]:
@@ -944,6 +984,12 @@ class MemorySystem:
     def clear(self):
         """清空所有数据"""
         self._check_initialized()
+        # 先清空写缓存
+        if self._write_cache:
+            with self._write_cache._lock:
+                self._write_cache._pending.clear()
+                self._write_cache._by_id.clear()
+                self._write_cache._slot_data.clear()
         self._vec_db.clear()
         self._time_index.clear()
         self._slot_index.clear()
