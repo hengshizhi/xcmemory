@@ -149,20 +149,18 @@ class NLPipeline:
         self.llm.chat.completions.create = self._make_traced_create()
 
         # =====================================================================
-        # Stage 1: 意图识别（统一输出 MQL，一次完成）
+        # Stage 1: 意图识别
         # =====================================================================
         self._current_trace_step = "① 意图识别"
         intent_result = await self.intent_classifier.classify(nl_query, history)
         llm_calls += 1
         writes = intent_result["writes"]
-        writes_mql = intent_result.get("writes_mql", "")
         queries = intent_result["queries"]
         lifecycle = intent_result["lifecycle"]
         reference_duration = intent_result["reference_duration"]
 
-        write_count = len(writes) if writes else (writes_mql.count("INSERT") if writes_mql else 0)
         all_steps_summary.append(
-            f"1.意图识别→{write_count}条写入 + {len(queries)}条查询 "
+            f"1.意图识别→{len(writes)}条写入 + {len(queries)}条查询 "
             f"(lifecycle={lifecycle})"
         )
 
@@ -170,14 +168,11 @@ class NLPipeline:
             print(f"[NLPipeline DEBUG] writes={writes}, queries={queries}, lifecycle={lifecycle}")
 
         # =====================================================================
-        # Stage 2a: 写入流程（如有写入）
+        # Stage 2a: 写入流程（如有写入句）
         # =====================================================================
         write_results = []
         write_mql_list = []
-        write_mql_script = writes_mql  # 优先使用统一提示词直接输出的 MQL
-
-        # 如果非统一格式输出（旧版 writes 列表），回退到 write_gen
-        if not write_mql_script and writes:
+        if writes:
             self._current_trace_step = "②a 写入MQL生成"
             write_mql_result = await self.write_gen.generate(
                 writes, reference_duration=reference_duration
@@ -185,32 +180,32 @@ class NLPipeline:
             llm_calls += 1
             write_mql_script = write_mql_result["mql_script"]
 
-        if write_mql_script:
-            # ── 去重：查询已有记忆，跳过近重复写入 ──
-            write_mql_script = self._dedup_writes(
-                write_mql_script, all_steps_summary
-            )
-            if not write_mql_script:
-                all_steps_summary.append(
-                    f"2a.写入流程→全部被去重跳过，0条INSERT"
-                )
-
             if write_mql_script:
-                try:
-                    interp = Interpreter()
-                    interp.bind("mem", self.mem)
-                    write_results = interp.execute_script(write_mql_script)
-                except Exception as e:
-                    if self.debug:
-                        print(f"[NLPipeline DEBUG] write execute error: {e}")
-                    write_results = []
+                # ── 去重：查询已有记忆，跳过近重复写入 ──
+                write_mql_script = self._dedup_writes(
+                    write_mql_script, all_steps_summary
+                )
+                if not write_mql_script:
+                    all_steps_summary.append(
+                        f"2a.写入流程→全部被去重跳过，0条INSERT"
+                    )
 
-            write_mql_list = [p.strip() for p in write_mql_script.split(";") if p.strip()]
+                if write_mql_script:
+                    try:
+                        interp = Interpreter()
+                        interp.bind("mem", self.mem)
+                        write_results = interp.execute_script(write_mql_script)
+                    except Exception as e:
+                        if self.debug:
+                            print(f"[NLPipeline DEBUG] write execute error: {e}")
+                        write_results = []
 
-        all_steps_summary.append(
-            f"2a.写入流程→{len(write_mql_list)}条INSERT, "
-            f"{sum(1 for r in write_results if getattr(r, 'type', '') == 'insert')}条成功"
-        )
+                write_mql_list = [p.strip() for p in write_mql_script.split(";") if p.strip()]
+
+            all_steps_summary.append(
+                f"2a.写入流程→{len(write_mql_list)}条INSERT, "
+                f"{sum(1 for r in write_results if getattr(r, 'type', '') == 'insert')}条成功"
+            )
 
         # =====================================================================
         # Stage 2b: 查询流程（如有查询句）
