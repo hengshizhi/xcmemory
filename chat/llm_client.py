@@ -15,7 +15,7 @@ class LLMClient:
         base_url: str,
         api_key: str,
         model: str,
-        max_tokens: int = 2048,
+        max_tokens: int = 100000,
         temperature: float = 0.8,
         timeout: float = 120.0,
     ):
@@ -40,25 +40,24 @@ class LLMClient:
         )
         return resp.choices[0].message.content if resp.choices else ""
 
-    async def complete_with_thinking(self, messages: list[dict]) -> tuple[str, str]:
-        """
-        非流式 + 思考模式。返回 (reasoning_content, content)。
-        """
-        resp = await self.client.chat.completions.create(
+    async def stream_with_thinking(self, messages: list[dict]) -> AsyncIterator[tuple[str, str]]:
+        """流式 + 思考模式。yields ("think", token) 或 ("reply", token)。"""
+        s = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
-            stream=False,
+            stream=True,
             extra_body={"thinking": {"type": "enabled"}},
         )
-        if not resp.choices:
-            return "", ""
-        msg = resp.choices[0].message
-        return (
-            getattr(msg, "reasoning_content", "") or "",
-            msg.content or "",
-        )
+        async for chunk in s:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta.reasoning_content:
+                yield ("think", delta.reasoning_content)
+            if delta.content:
+                yield ("reply", delta.content)
 
     async def stream(self, messages: list[dict]) -> AsyncIterator[str]:
         """流式调用。"""

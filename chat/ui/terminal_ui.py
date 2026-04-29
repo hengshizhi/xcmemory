@@ -7,6 +7,7 @@ import asyncio
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.text import Text
 
 from chat_engine import ChatEngine, ChatEvent, EventType
 from character_card import CharacterCard
@@ -39,9 +40,10 @@ class TerminalUI:
         if online:
             count = await self.engine.memory.count_memories()
             if count == 0:
+                self.engine._is_onboarding = True
                 self.console.print()
-                self.console.print("[bold yellow]🌟 检测到记忆系统为空[/bold yellow]")
-                self.console.print("[dim]你可以直接与角色对话，记忆会在对话中逐步建立。[/dim]")
+                self.console.print("[bold yellow]🌟 检测到记忆系统为空，进入记忆构建模式[/bold yellow]")
+                self.console.print("[dim]角色如同一张白纸，会全然相信你告诉她的一切。[/dim]")
             elif count > 0:
                 self.console.print(f"[green]📚 记忆系统已有 {count} 条记忆[/green]")
             else:
@@ -68,6 +70,10 @@ class TerminalUI:
                 self.engine.clear_history()
                 self.console.print("[dim]对话历史已清除[/dim]\n")
                 continue
+            elif user_input == "/done":
+                self.engine._is_onboarding = False
+                self.console.print("[dim]已退出引导模式[/dim]\n")
+                continue
             elif user_input == "/help":
                 self._print_help()
                 continue
@@ -75,6 +81,7 @@ class TerminalUI:
             await self._handle_chat(user_input)
 
     async def _handle_chat(self, user_input: str):
+        think_parts = []
         reply_parts = []
 
         try:
@@ -85,7 +92,21 @@ class TerminalUI:
                     self.console.print(f"  [dim green]📋 {event.text}[/dim green]")
                 elif event.type == EventType.MEMORY_SAVE:
                     self.console.print(f"  [dim yellow]💾 {event.text}[/dim yellow]")
-                elif event.type == EventType.REPLY_SEGMENT:
+                elif event.type == EventType.THINK_START:
+                    think_parts.clear()
+                elif event.type == EventType.THINK_SEGMENT:
+                    think_parts.append(event.text)
+                elif event.type == EventType.THINK_END:
+                    if think_parts:
+                        self.console.print()
+                        self.console.print(
+                            Panel(
+                                Text("".join(think_parts), style="dim italic"),
+                                title=f"[{self.character.avatar}] {self.character.name}的思考",
+                                border_style="dim",
+                                padding=(0, 1),
+                            )
+                        )
                     reply_parts.append(event.text)
                 elif event.type == EventType.REPLY_END:
                     if reply_parts:

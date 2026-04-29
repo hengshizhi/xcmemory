@@ -67,3 +67,5 @@ temp/
 /EverOS-main
 config.toml
 chat/config.toml
+/.workbuddy
+/__pycache__

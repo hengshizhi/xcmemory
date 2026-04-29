@@ -21,6 +21,8 @@ from prompts import (
     PARAPHRASE_PROMPT,
     EXTRACT_FACTS_PROMPT,
     ROLEPLAY_SYSTEM_TEMPLATE,
+    ONBOARDING_SYSTEM_TEMPLATE,
+    INNER_OS_MARKER,
 )
 
 
@@ -32,6 +34,9 @@ class EventType(str, Enum):
     MEMORY_QUERY = "memory_query"
     MEMORY_RESULT = "memory_result"
     MEMORY_SAVE = "memory_save"
+    THINK_START = "think_start"
+    THINK_SEGMENT = "think_segment"
+    THINK_END = "think_end"
     REPLY_SEGMENT = "reply_segment"
     REPLY_END = "reply_end"
     ERROR = "error"
@@ -64,6 +69,8 @@ class ChatEngine:
         self.user_name = user_name
         self.history: list[dict] = []
         self.known_memories: list[str] = []
+        self._is_onboarding: bool = False
+        self._first_marker: str = ""
 
         mono_cfg = config.get("monologue", {})
         self.recall_top_k: int = mono_cfg.get("recall_top_k", 5)
@@ -72,6 +79,19 @@ class ChatEngine:
 
     async def _memory_manager(self, user_input: str) -> AsyncIterator[ChatEvent]:
         yield ChatEvent(type=EventType.MEMORY_QUERY, text="🔍 记忆管家分析中...")
+
+        # 引导模式下跳过查询，直接生成转述
+        if self._is_onboarding:
+            yield ChatEvent(type=EventType.MEMORY_QUERY, text="查询: (引导模式，跳过)")
+            known_text = "\n".join(f"- {k}" for k in self.known_memories) if self.known_memories else "（无）"
+            paraphrase = await self.llm.complete([
+                {"role": "user", "content": PARAPHRASE_PROMPT.format(
+                    query=user_input, known=known_text)},
+            ])
+            paraphrase = paraphrase.strip()
+            if paraphrase and paraphrase != "无":
+                yield ChatEvent(type=EventType.MEMORY_RESULT, text=paraphrase)
+            return
 
         # 上下文与扮演 LLM 同步（最近 4 轮）
         ctx = []
@@ -124,10 +144,11 @@ class ChatEngine:
     # ── 构建扮演 messages ──────────────────────────────────
 
     def _build_messages(self, user_input: str, memory_context: str) -> list[dict]:
+        template = ONBOARDING_SYSTEM_TEMPLATE if self._is_onboarding else ROLEPLAY_SYSTEM_TEMPLATE
         messages = [
             {
                 "role": "system",
-                "content": ROLEPLAY_SYSTEM_TEMPLATE.format(
+                "content": template.format(
                     name=self.character.name,
                     user_name=self.user_name,
                     card=self.character.get_system_prompt_section(),
@@ -135,6 +156,11 @@ class ChatEngine:
                 ),
             },
         ]
+        # 标记始终在历史之前，不受 4 轮限制
+        if not self.history:
+            self._first_marker = f"你是{self.character.name}{INNER_OS_MARKER}"
+        if self._first_marker:
+            messages.append({"role": "user", "content": self._first_marker})
         messages.extend(self.history[-8:])
         messages.append({"role": "user", "content": user_input})
         return messages
@@ -152,13 +178,23 @@ class ChatEngine:
         except Exception as e:
             yield ChatEvent(type=EventType.ERROR, text=f"记忆管家错误: {e}")
 
-        # 2. 扮演 LLM
+        # 2. 扮演 LLM（思考模式）
         messages = self._build_messages(user_input, memory_text)
         try:
             full_reply = ""
-            async for token in self.llm.stream(messages):
-                full_reply += token
-                yield ChatEvent(type=EventType.REPLY_SEGMENT, text=token)
+            think_started = False
+            async for token_type, token in self.llm.stream_with_thinking(messages):
+                if token_type == "think":
+                    if not think_started:
+                        yield ChatEvent(type=EventType.THINK_START)
+                        think_started = True
+                    yield ChatEvent(type=EventType.THINK_SEGMENT, text=token)
+                else:
+                    if think_started:
+                        yield ChatEvent(type=EventType.THINK_END)
+                        think_started = False
+                    full_reply += token
+                    yield ChatEvent(type=EventType.REPLY_SEGMENT, text=token)
         except Exception as e:
             yield ChatEvent(type=EventType.ERROR, text=f"LLM 错误: {e}")
         yield ChatEvent(type=EventType.REPLY_END)
@@ -189,6 +225,7 @@ class ChatEngine:
             for fact in facts:
                 if fact not in self.known_memories:
                     self.known_memories.append(fact)
+    
         else:
             yield ChatEvent(type=EventType.MEMORY_SAVE, text="未提取到可保存的记忆")
 
@@ -206,3 +243,4 @@ class ChatEngine:
     def clear_history(self):
         self.history = []
         self.known_memories = []
+        self._first_marker = ""

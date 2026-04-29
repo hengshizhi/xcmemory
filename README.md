@@ -1,7 +1,5 @@
 # 星尘记忆系统 (xcmemory_interest)
 
-> v0.4.0 - 结构化记忆检索系统
-
 ## 概述
 
 星尘记忆系统是一个基于向量检索的结构化记忆管理系统，支持 6 槽位记忆结构、MQL 查询语言、自然语言查询、角色扮演 Chat 和多数据库管理。
@@ -192,9 +190,3 @@ GRANT read_write ON my_memory TO alice
 | [开发文档](docs/DEVELOPER_GUIDE.md) | 架构设计和扩展指南 |
 | [API 参考](docs/API_REFERENCE.md) | HTTP/WS/WebUI API 文档 |
 | [MQL 参考](docs/MQL_REFERENCE.md) | MQL 语法参考 |
-
-## 版本历史
-
-| 版本 | 说明 |
-|------|------|
-| v0.4.0 | NL Pipeline、MQL GRAPH/TIME、Chat 应用、HTTP/WS API、提示词分离 |
