@@ -182,9 +182,11 @@ class ChatEngine:
         messages = self._build_messages(user_input, memory_text)
         try:
             full_reply = ""
+            think_buf = ""
             think_started = False
             async for token_type, token in self.llm.stream_with_thinking(messages):
                 if token_type == "think":
+                    think_buf += token
                     if not think_started:
                         yield ChatEvent(type=EventType.THINK_START)
                         think_started = True
@@ -197,6 +199,10 @@ class ChatEngine:
                     yield ChatEvent(type=EventType.REPLY_SEGMENT, text=token)
             if think_started:
                 yield ChatEvent(type=EventType.THINK_END)
+            # 如果模型只输出思维链没输出回复，用思维链作为回复
+            if not full_reply.strip() and think_buf.strip():
+                full_reply = think_buf.strip()
+                yield ChatEvent(type=EventType.REPLY_SEGMENT, text=full_reply)
         except Exception as e:
             yield ChatEvent(type=EventType.ERROR, text=f"LLM 错误: {e}")
         yield ChatEvent(type=EventType.REPLY_END)

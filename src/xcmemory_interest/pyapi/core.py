@@ -214,13 +214,9 @@ class MemorySystem:
 
         self._initialized = True
 
-        # 启动写缓存（异步刷盘）
-        self._write_cache = WriteCache(flush_interval=1.0, flush_batch_size=100)
-        self._write_cache.bind(
-            vec_db=self._vec_db,
-            time_index=self._time_index,
-            slot_index=self._slot_index,
-        )
+        # 启动写缓存（全异步：编码+生命周期+落盘全在后台）
+        self._write_cache = WriteCache(flush_interval=0.5)
+        self._write_cache.bind(system=self)
         self._write_cache.start()
 
     def close(self):
@@ -304,81 +300,43 @@ class MemorySystem:
         created_at: datetime = None,
     ) -> str:
         """
-        写入记忆（异步缓存：立即返回，后台批量落盘）
+        写入记忆（全异步：立即返回 ID，后台完成编码+生命周期+落盘）
 
         Args:
             query_sentence: 查询句 "<场景><主体><动作><宾语><目的><结果>"
             content: 记忆内容（可留空）
-            reference_duration: 参考生命周期（秒），传给 LifecycleManager 决策用；None 时用默认 86400
-            scene_word: 场景词（从查询句自动提取，可覆盖）
-            created_at: 创建时间（默认当前时间）
+            reference_duration: 参考生命周期（秒），传给 LifecycleManager 决策用
+            scene_word: 场景词（可覆盖）
+            created_at: 创建时间（当前版本由后台线程生成）
 
         Returns:
             memory_id
-
-        Raises:
-            ValueError: 查询句格式错误或与现有记忆过于相似
         """
         self._check_initialized()
 
-        # 构建查询句（如果只传了槽位参数）
         if "<" not in query_sentence:
-            query_sentence = self._build_query_sentence(
+            query_sentence = self._build_query_sentence(scene_word=scene_word, subject=query_sentence)
+
+        # 全异步：提交原始输入，立即返回
+        if self._write_cache is not None:
+            return self._write_cache.submit(
+                query_sentence=query_sentence,
+                content=content,
+                reference_duration=reference_duration,
                 scene_word=scene_word,
-                subject=query_sentence,
             )
 
-        # 解析槽位
+        # 降级：无缓存时直接同步写入
+        import uuid as _uuid
+        memory_id = f"mem_{_uuid.uuid4().hex[:12]}"
         parts = self._parse_query_sentence(query_sentence)
-        scene_word_extracted = parts[0] or scene_word or ""
         created_at = created_at or datetime.now()
-
-        # 相似度检查（仅在兴趣模式下）
-        if self.enable_interest_mode and self.similarity_threshold > 0:
-            if self._is_similar(query_sentence):
-                raise ValueError("写入被拒绝：与现有记忆过于相似")
-
-        # 构建槽位字典（用于 LifecycleManager）
-        slot_dict = {
-            "scene": parts[0], "subject": parts[1], "action": parts[2],
-            "object": parts[3], "purpose": parts[4], "result": parts[5],
-        }
-        slot_dict = {k: v for k, v in slot_dict.items() if v}
-
-        # 决定生命周期
-        if self._lifecycle_mgr is not None:
-            decided_lifecycle = self._lifecycle_mgr.decide_new_lifecycle(
-                query_slots=slot_dict,
-                reference_duration=reference_duration if reference_duration is not None else 86400,
-            )
-        else:
-            decided_lifecycle = reference_duration if reference_duration is not None else 86400
-
-        # 生成 memory_id 和向量编码（同步，~2ms GPU）
-        import uuid
-        memory_id = f"mem_{uuid.uuid4().hex[:12]}"
+        lifecycle = reference_duration if reference_duration is not None else 86400
         embedding_mode = EmbeddingMode.INTEREST if self.enable_interest_mode else EmbeddingMode.RAW
-        slots = self._vec_db._slots_from_sentence(query_sentence)
-        interest_vec = self._vec_db.pipeline.encode(slots, use_raw=False, normalize=True)
-        raw_vec = self._vec_db.pipeline.encode(slots, use_raw=True, normalize=True)
-        slot_vecs = self._vec_db.pipeline.get_slot_vectors(slots)
-        slot_values = {name: parts[i] for i, name in enumerate(self._vec_db.SLOT_NAMES)}
-
-        full_vec = interest_vec if embedding_mode != EmbeddingMode.RAW else raw_vec
-        memory = Memory(
-            id=memory_id,
-            query_sentence=query_sentence,
-            query_embedding=full_vec,
-            raw_embedding=raw_vec,
-            content=content,
-            lifecycle=decided_lifecycle,
-            created_at=created_at,
-            updated_at=created_at,
+        self._vec_db.write(
+            query_sentence=query_sentence, content=content,
+            lifecycle=lifecycle, embedding_mode=embedding_mode,
         )
-
-        # 写入缓存（延迟刷盘到 ChromaDB + SQLite + 索引）
-        self._write_cache.write(memory, slot_vecs, slot_values)
-
         return memory_id
 
     # =========================================================================
@@ -558,31 +516,6 @@ class MemorySystem:
             embedding_mode=embedding_mode,
             use_slot_rerank=use_slot_rerank,
         )
-
-        # 补充缓存中未刷盘的结果
-        if self._write_cache is not None:
-            # 构建查询向量
-            query_texts = {}
-            for s in self._vec_db.SLOT_NAMES:
-                query_texts[s] = query_slots.get(s, "")
-            q_text = "".join(f"<{query_texts[s]}>" for s in self._vec_db.SLOT_NAMES)
-            q_slots = self._vec_db._slots_from_sentence(q_text)
-            q_vec = self._vec_db.pipeline.encode(q_slots, use_raw=(embedding_mode == EmbeddingMode.RAW), normalize=True)
-
-            cached = self._write_cache.search_supplement(q_vec, top_k)
-            existing_ids = {r.memory_id for r in results}
-
-            for c in cached:
-                if c["memory_id"] not in existing_ids:
-                    results.append(SearchResult(
-                        memory_id=c["memory_id"],
-                        distance=c["distance"],
-                        metadata={},
-                    ))
-
-            results.sort(key=lambda r: r.distance)
-            results = results[:top_k]
-
         return results
 
     def search(
