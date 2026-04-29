@@ -133,6 +133,12 @@ class WriteCache:
         with self._lock:
             return len(self._raw_pending)
 
+    def clear(self):
+        """清空所有待处理和已缓存的条目。"""
+        with self._lock:
+            self._raw_pending.clear()
+            self._by_id.clear()
+
     # ---- 后台处理 ----
 
     def _run(self):

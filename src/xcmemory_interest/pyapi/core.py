@@ -917,12 +917,8 @@ class MemorySystem:
     def clear(self):
         """清空所有数据"""
         self._check_initialized()
-        # 先清空写缓存
         if self._write_cache:
-            with self._write_cache._lock:
-                self._write_cache._pending.clear()
-                self._write_cache._by_id.clear()
-                self._write_cache._slot_data.clear()
+            self._write_cache.clear()
         self._vec_db.clear()
         self._time_index.clear()
         self._slot_index.clear()
