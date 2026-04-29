@@ -12,48 +12,7 @@ from typing import AsyncIterator
 from openai import AsyncOpenAI
 
 
-PRE_RETRIEVAL_SYSTEM = """
-# Task Objective
-判断当前查询是否需要从记忆系统中检索信息。
-如果需要检索，重写查询以融入相关上下文。
-
-# 判断规则
-需要检索 (RETRIEVE)：
-- 询问过去的事件、对话、经历
-- 关于用户偏好、习惯、特征的问题
-- 要求回忆特定信息
-- 涉及历史数据的提问
-- "我之前..."、"记得..."、"有没有..."
-
-不需要检索 (NO_RETRIEVE)：
-- 问候、寒暄、简单回应
-- 关于当前对话内容的问题
-- 常识性问题
-- 要求澄清的问题
-- 系统本身的问题
-
-# 输出格式
-<decision>
-RETRIEVE 或 NO_RETRIEVE
-</decision>
-
-<rewritten_query>
-如果 RETRIEVE：提供融入上下文的重写查询。
-如果 NO_RETRIEVE：原样返回原查询。
-</rewritten_query>
-"""
-
-USER_PROMPT_TEMPLATE = """
-# Input
-Query Context:
-{conversation_history}
-
-Current Query:
-{query}
-
-Retrieved Content:
-{retrieved_content}
-"""
+from ..prompts.nl import PRE_RETRIEVAL_SYSTEM, USER_PROMPT_TEMPLATE
 
 
 class NLQueryDecider:

@@ -16,6 +16,12 @@ from typing import AsyncIterator, Optional
 from character_card import CharacterCard
 from llm_client import LLMClient
 from memory_client import MemoryClient
+from src.xcmemory_interest.prompts.chat import (
+    QUERY_GEN_PROMPT,
+    PARAPHRASE_PROMPT,
+    EXTRACT_FACTS_PROMPT,
+    ROLEPLAY_SYSTEM_TEMPLATE,
+)
 
 
 # ============================================================================
@@ -36,64 +42,6 @@ class ChatEvent:
     type: EventType
     text: str = ""
     data: Optional[dict] = None
-
-
-# ============================================================================
-# 记忆管家 Prompts
-# ============================================================================
-
-QUERY_GEN_PROMPT = """根据对话上下文和已知记忆，从用户最新消息中提取需要检索的疑问，生成查询。每个查询必须以问号或疑问词结尾。
-不需要检索时输出「无」。
-
-对话上下文：
-{context}
-
-已知记忆：
-{known}
-
-用户最新消息：{query}
-
-查询词："""
-
-
-PARAPHRASE_PROMPT = """根据已知信息和用户的问题，用第二人称「你」生成角色已知事实的转述。
-如果没有任何已知信息，输出「无」。
-
-用户问题：{query}
-
-已知信息：
-{known}
-
-转述（第二人称）："""
-
-
-# ============================================================================
-# 记忆写入 Prompt
-# ============================================================================
-
-EXTRACT_FACTS_PROMPT = """从对话中提取具有长期价值的实证信息，用第一人称「我」的视角，以一段连贯的话表述，不要分点列条。
-注意人称转换：对方说的「你」→「我」，对方说的「我」→角色名「绯绯」。
-包括：身份、关系、性格、喜好、约定、事件、世界知识。
-排除以下短暂无价值信息：表情动作（笑、愣、抱、点头等）、语气描写、临时情绪、对话流程描述。
-没有可保存的信息时输出「无」。
-
-对话：
-{conversation}
-
-陈述："""
-
-
-# ============================================================================
-# 扮演 LLM 系统提示
-# ============================================================================
-
-ROLEPLAY_SYSTEM_TEMPLATE = """你是{name}。你正在与{user_name}对话。
-{card}
-
-已知信息：
-{memory}
-
-【最高指令】你的任何回答必须基于以上「已知信息」。如果已知信息中不包含回答所需的内容，你只能回答「我不记得」「我不确定」「我不知道」，严禁编造任何事实。"""
 
 
 # ============================================================================
@@ -139,8 +87,10 @@ class ChatEngine:
                 context=context, known=known_text, query=user_input)},
         ])
         queries_text = queries_text.strip()
-        if "查询词：" in queries_text:
-            queries_text = queries_text.split("查询词：", 1)[1]
+        for prefix in ["查询词：", "查询："]:
+            if prefix in queries_text:
+                queries_text = queries_text.split(prefix, 1)[1]
+                break
         queries_text = queries_text.strip()
         queries = [q.strip() for q in queries_text.split("\n") if q.strip() and q.strip() != "无"]
         yield ChatEvent(type=EventType.MEMORY_QUERY, text=f"查询: {' '.join(queries) if queries else '(空)'}")
@@ -224,6 +174,8 @@ class ChatEngine:
             saved = 0
             for fact in facts:
                 result = await self.memory.nl_query(f"记住: {fact}", top_k=1)
+                if result.type != "write_only":
+                    result = await self.memory.nl_query(f"记住: {fact}", top_k=1)
                 if result.type == "write_only":
                     saved += 1
             preview = "；".join(facts[:3])
@@ -233,6 +185,10 @@ class ChatEngine:
                 type=EventType.MEMORY_SAVE,
                 text=f"已写入 {saved}/{len(facts)} 条 ({preview})",
             )
+            # 同步到管家上下文，避免重复提取
+            for fact in facts:
+                if fact not in self.known_memories:
+                    self.known_memories.append(fact)
         else:
             yield ChatEvent(type=EventType.MEMORY_SAVE, text="未提取到可保存的记忆")
 

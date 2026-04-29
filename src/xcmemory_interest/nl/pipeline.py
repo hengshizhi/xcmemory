@@ -21,6 +21,11 @@ from .write_mql_generator import WriteMQLGenerator
 from .mql_generator import MQLGenerator
 from .hybrid_search import HybridSearch
 from ..mql import Interpreter
+from ..prompts.nl import (
+    RESULT_GENERATION_PROMPT,
+    REFLECTION_REVIEW_PROMPT,
+    REGENERATE_MQL_PROMPT,
+)
 
 
 # =============================================================================
@@ -44,106 +49,6 @@ def reset_llm_stats():
     _llm_stats["total_calls"] = 0
     _llm_stats["query_count"] = 0
     _llm_stats["calls_detail"].clear()
-
-
-# =============================================================================
-# Prompt 模板
-# =============================================================================
-
-RESULT_GENERATION_PROMPT = """# Task
-你是 {holder}，正在回忆自己的记忆来回答问题。你是在自问自答——用第一人称，从自己的视角出发。
-
-# 问题
-{query}
-
-# 检索到的记忆（共 {count} 条）
-{memories_text}
-
-# 回答要求
-1. 用第一人称回答，你就是 {holder}，这些是你的亲身记忆
-2. 语气自然简练，像在心里默默回忆，不要用"根据记忆"、"用户"等旁观者措辞
-3. 如果记忆为空，简短说"我暂时想不起相关的事"
-4. 提炼记忆中的关键信息，用自己的话简要概括，不要逐条罗列
-5. 涉及时间/日期时，换算为相对时间（如"昨天"、"上周"）更自然
-6. 控制篇幅：回答不超过 5-8 句话，抓住重点即可，不要写长文
-7. ★禁止输出动作描写★：不要写括号动作（如"（轻轻放下书）"、"（微笑）"等），这是内心回忆，不是舞台表演
-"""
-
-# Stage 6: 反思审查（简化版——只判断够不够，不给MQL建议）
-REFLECTION_REVIEW_PROMPT = """# Task
-你是一个记忆检索审核员。你的任务是判断 NL 回答是否足够回答用户的问题。
-
-# 用户原始问题
-{query}
-
-# 当前 NL 回答
-{nl_response}
-
-# 检索到的记忆（共 {count} 条）
-{memories_text}
-
-# 判断标准
-**足够（输出）**：检索到记忆且 NL 回答已实质性回答了问题
-
-**不够（重查）**的典型场景：
-1. 检索到 0 条记忆，但用户的问题不太可能是毫无记忆的 → subject 映射错误或 MQL 语法错误
-2. NL 回答说"没有相关记忆"或"暂时想不起"但问题应该有记忆 → 检索失败
-3. NL 回答极短（<5字）或只有标点 → 检索结果根本没有命中主题
-4. NL 回答内容与问题明显不符 → 检索方向错了
-5. 问题涉及多维度但 NL 回答单一 → 遗漏了某些方面的记忆
-6. 记忆中有相关内容但 NL 回答没有涵盖 → 回答不完整
-
-# 输出格式（严格遵循）
-<retry>YES/NO</retry>
-<hint>如果 retry=YES，用一句话说明哪里不够（不要给MQL建议，只要说明问题，如"内容太少"或"应该查用户的饮食习惯"）；如果 retry=NO 则写"无"</hint>
-"""
-
-
-# 重查MQL生成：解析反思提示，生成改进版MQL
-REGENERATE_MQL_PROMPT = """# Task
-你是一个 MQL 检索专家。用户刚刚进行了一次 NL 查询，但检索结果不理想，你需要根据反思提示重新生成 MQL。
-
-# 当前时间
-{current_date}
-
-# 用户原始问题
-{query}
-
-# 上一次执行的 MQL
-{prev_mql}
-
-# 反思审查的提示
-{reflection_hint}
-
-# 重查要求
-1. 仔细分析反思提示，理解问题所在
-2. 结合用户原始问题，生成更合适的 MQL
-3. 可以调整 subject/object/limit 等条件
-4. 如果反思提示说"内容太少"，可以增加 LIMIT 或去掉严格限制
-5. 如果反思提示说"应该查XX方面"，需要在 MQL 中体现这个方向
-6. 必须生成合法的 MQL 语句
-7. 涉及相对时间词时，根据当前时间换算为绝对年份/月份/日期
-
-# ★★★ 当前时间参考 ★★★
-当前时间：{current_date}
-- "今天"→ TIME year({current_year}) AND month({current_month}) AND day({current_day})
-- "昨天"→ TIME year({current_year}) AND month({current_month}) AND day({prev_day})
-- "前天"→ TIME year({current_year}) AND month({current_month}) AND day({prev2_day})
-- "明天"→ TIME year({current_year}) AND month({current_month}) AND day({next_day})
-- "去年"→ TIME year({last_year})
-- "上个月"→ TIME year({prev_year}) AND month({prev_month})
-
-# ★★★ 语法要点 ★★★
-⚠️ TIME 是独立子句，不能用 AND 连接到 WHERE！
-   错误：WHERE subject='星织' AND TIME year(2026)
-   正确：WHERE subject='星织' TIME year(2026)
-⚠️ 不要用 LIKE 做时间过滤！用 TIME 关键字：TIME year(2026) AND month(04)
-❌ 禁止：BETWEEN / ORDER BY / GROUP BY / JOIN / 子查询
-
-# 输出格式（严格遵循）
-<mql>改进后的 MQL 语句</mql>
-<confidence>0.0-1.0 的置信度</confidence>
-"""
 
 
 class NLPipeline:

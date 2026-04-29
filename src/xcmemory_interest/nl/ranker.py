@@ -11,49 +11,14 @@ import json
 import re
 from typing import Any
 
+from ..prompts.nl import RANKER_PROMPT
+
+
 # =============================================================================
-# Prompt 模板
+# MemoryItemRanker
 # =============================================================================
 
-RANKER_PROMPT = """
-# Task Objective
-在提供的记忆项中，基于查询意图识别最相关的项，并按相关性排序。
-
-# Workflow
-1. 分析 **Query**，理解用户的信息需求和核心意图
-2. 逐一审查 **Available Memory Items** 中的每一项
-3. 评估每项与查询的相关性：
-   - 内容是否直接回答了查询
-   - 主题是否匹配查询意图
-   - 是否有语义关联（即使不直接匹配）
-4. 排除与查询无关的项
-5. 将选中的相关项按相关性从高到低排序
-6. 最多返回 **{top_k}** 个结果
-
-# Rules
-- 只包含真正与查询相关的记忆项
-- 最多返回 **{top_k}** 个项
-- 排序至关重要：第一个必须是最相关的
-- 不要编造、修改或推断 item ID
-- 如果没有相关项，返回空数组
-- 每个 item 的 lifecycle 字段表示记忆的生命周期（秒），可用于判断时效性
-
-# Output Format
-返回 JSON 对象，格式如下：
-
-```json
-{{
-  "analysis": "分析过程，说明为什么这些项相关或为什么不相关",
-  "items": ["item_id_1", "item_id_2", "item_id_3"]
-}}
-```
-
-Query:
-{query}
-
-Available Memory Items:
-{items_data}
-"""
+from ..prompts.nl import RANKER_PROMPT
 
 # =============================================================================
 # MemoryItemRanker

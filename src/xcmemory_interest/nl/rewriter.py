@@ -8,32 +8,7 @@ import re
 from openai import AsyncClient
 
 
-QUERY_REWRITE_PROMPT = """
-# Task Objective
-将用户查询重写为自包含的、无歧义的版本，利用对话历史解析代词和隐含引用。
-
-# 规则
-- 将代词（"他们"、"它"、"他的"）替换为对话中提到的具体实体
-- 将隐含引用（"那个"、"同样"）展开为完整表述
-- 添加必要的对话历史背景
-- 如果查询已经清晰自包含，保持不变
-- 不要引入外部知识或新假设
-
-# 输出格式
-<analysis>
-简要分析是否需要重写及原因
-</analysis>
-
-<rewritten_query>
-重写后的自包含查询
-</rewritten_query>
-
-Query Context:
-{conversation_history}
-
-Current Query:
-{query}
-"""
+from ..prompts.nl import QUERY_REWRITE_PROMPT
 
 
 class QueryRewriter:

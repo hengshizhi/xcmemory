@@ -15,40 +15,7 @@ import re
 from openai import AsyncClient
 
 
-# =============================================================================
-# Prompt 模板
-# =============================================================================
-
-SUFFICIENCY_PROMPT = """
-# Task Objective
-判断已检索的记忆内容是否足够回答用户查询。
-
-# 判断规则（保守策略）
-满足以下**全部**条件才返回 ENOUGH：
-- 检索内容直接回答了用户问题
-- 信息足够具体详细
-- 没有明显的缺失或空白
-
-以下任一情况返回 MORE：
-- 关键信息缺失
-- 检索内容不具体
-- 用户明确要求回忆更多信息
-
-# 输出格式
-<consideration>
-判断理由
-</consideration>
-
-<judgement>
-ENOUGH 或 MORE
-</judgement>
-
-Query:
-{query}
-
-Retrieved Content:
-{content}
-"""
+from ..prompts.nl import SUFFICIENCY_PROMPT
 
 
 # =============================================================================
