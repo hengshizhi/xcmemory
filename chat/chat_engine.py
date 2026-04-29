@@ -16,7 +16,7 @@ from typing import AsyncIterator, Optional
 from character_card import CharacterCard
 from llm_client import LLMClient
 from memory_client import MemoryClient
-from src.xcmemory_interest.prompts.chat import (
+from prompts import (
     QUERY_GEN_PROMPT,
     PARAPHRASE_PROMPT,
     EXTRACT_FACTS_PROMPT,
