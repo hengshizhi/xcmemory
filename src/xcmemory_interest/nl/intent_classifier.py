@@ -17,7 +17,7 @@ import re
 from typing import Any
 
 
-from ..prompts.nl import INTENT_CLASSIFY_PROMPT
+from ..prompts.nl import UNIFIED_INTENT_PROMPT
 
 # =============================================================================
 # 档位 → reference_duration 映射
@@ -85,10 +85,11 @@ class IntentClassifier:
             context = self._format_history(history)
             context_query = f"[对话背景]\n{context}\n\n[当前输入]\n{query}"
 
-        prompt = INTENT_CLASSIFY_PROMPT.format(
+        prompt = UNIFIED_INTENT_PROMPT.format(
             query=context_query,
             holder=self.system_holder,
             current_date=now.strftime("%Y-%m-%d %H:%M"),
+            reference_duration=86400,
         )
 
         try:
@@ -105,6 +106,7 @@ class IntentClassifier:
             # 降级：默认当作查询
             return {
                 "writes": [],
+                "writes_mql": "",
                 "queries": [query],
                 "lifecycle": "short",
                 "reference_duration": LIFECYCLE_TIERS["short"],
@@ -115,47 +117,59 @@ class IntentClassifier:
             print(f"[IntentClassifier DEBUG] raw output:\n{raw}\n")
 
         # 解析输出
-        writes_raw = self._extract_tag(raw, "writes")
+        writes_mql_raw = self._extract_tag(raw, "writes_mql")
         queries_raw = self._extract_tag(raw, "queries")
         lifecycle_raw = self._extract_tag(raw, "lifecycle").strip().lower()
 
-        writes = [s.strip() for s in writes_raw.split("|") if s.strip()]
+        # writes_mql 直接是 MQL INSERT 脚本
+        writes_mql = writes_mql_raw.strip() if writes_mql_raw else ""
+
+        # 向后兼容：如果未输出 writes_mql，尝试从旧格式 <writes> 提取陈述句列表
+        writes = []
+        if not writes_mql:
+            writes_raw = self._extract_tag(raw, "writes")
+            writes = [s.strip() for s in writes_raw.split("|") if s.strip()] if writes_raw else []
+
         queries = [s.strip() for s in queries_raw.split("|") if s.strip()]
 
-        # Fallback A: LLM 输出被截断，tags 未闭合（常见于 max_tokens 不够用）
-        if not writes and not queries and raw.strip() and raw.strip().startswith("<"):
+        # Fallback A: LLM 输出被截断
+        if not writes_mql and not writes and not queries and raw.strip() and raw.strip().startswith("<"):
             raw_stripped = raw.strip()
-            # 尝试从截断的 <writes> 中提取非空内容
-            partial = re.search(r"<writes>\s*([\s\S]*?)(?:</writes>|</|$)", raw_stripped)
+            partial = re.search(r"<writes_mql>\s*([\s\S]*?)(?:</writes_mql>|</|$)", raw_stripped)
             if partial:
-                writes_text = partial.group(1).strip()
+                writes_mql = partial.group(1).strip()
+            # 兼容旧标签名 <writes>
+            partial_old = re.search(r"<writes>\s*([\s\S]*?)(?:</writes>|</|$)", raw_stripped)
+            if partial_old and not writes_mql:
+                writes_text = partial_old.group(1).strip()
                 writes = [s.strip() for s in writes_text.split("|") if s.strip()]
-            # 尝试从截断的 <queries> 中提取
             partial_q = re.search(r"<queries>\s*([\s\S]*?)(?:</queries>|</|$)", raw_stripped)
             if partial_q:
                 queries_text = partial_q.group(1).strip()
                 queries = [s.strip() for s in queries_text.split("|") if s.strip()]
-            # 尝试 lifecycle（可能被截断）
             partial_l = re.search(r"<lifecycle>\s*(\w+)(?:</lifecycle>|</|$)", raw_stripped)
             if partial_l:
                 lifecycle_raw = partial_l.group(1).strip().lower()
             if self.debug:
-                print(f"[IntentClassifier DEBUG] truncated fallback: writes={writes}, queries={queries}, lifecycle={lifecycle_raw}")
+                print(f"[IntentClassifier DEBUG] truncated: writes_mql='{writes_mql[:80]}...', queries={queries}, lifecycle={lifecycle_raw}")
 
-        # Fallback B: LLM 未使用 XML 标签时，将原始输出作为写入陈述
-        if not writes and not queries and raw.strip():
+        # Fallback B: LLM 未使用 XML 标签
+        if not writes_mql and not writes and not queries and raw.strip():
             raw_stripped = raw.strip()
-            # 尝试将非标签的纯文本首行作为写入陈述
-            if "\n" in raw_stripped:
-                first_line = raw_stripped.split("\n")[0].strip()
-                if first_line and not first_line.startswith("<"):
-                    writes = [first_line]
-                    lifecycle_raw = "short"
-            elif not raw_stripped.startswith("<"):
-                writes = [raw_stripped]
+            if raw_stripped.upper().startswith("INSERT"):
+                writes_mql = raw_stripped
                 lifecycle_raw = "short"
+            elif not raw_stripped.startswith("<"):
+                if "\n" in raw_stripped:
+                    first_line = raw_stripped.split("\n")[0].strip()
+                    if first_line and not first_line.startswith("<"):
+                        writes = [first_line]
+                        lifecycle_raw = "short"
+                else:
+                    writes = [raw_stripped]
+                    lifecycle_raw = "short"
             if self.debug:
-                print(f"[IntentClassifier DEBUG] fallback: treating raw as write → {writes}")
+                print(f"[IntentClassifier DEBUG] fallback: writes={writes}, writes_mql={writes_mql[:80]}")
 
         # 档位校验
         if lifecycle_raw not in LIFECYCLE_TIERS:
@@ -164,6 +178,7 @@ class IntentClassifier:
 
         return {
             "writes": writes,
+            "writes_mql": writes_mql,
             "queries": queries,
             "lifecycle": lifecycle_raw,
             "reference_duration": reference_duration,

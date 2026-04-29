@@ -814,3 +814,82 @@ REGENERATE_MQL_PROMPT = """# Task
 <mql>改进后的 MQL 语句</mql>
 <confidence>0.0-1.0 的置信度</confidence>
 """
+
+
+# =============================================================================
+# 统一意图识别 + 写入MQL 合并提示词
+# 一次 LLM 调用完成意图分类 + INSERT 生成
+# =============================================================================
+
+UNIFIED_INTENT_PROMPT = """# Task
+分析用户输入，识别写入意图和查询意图。**对于写入，直接生成 INSERT MQL 语句。**
+
+# 身份声明
+当前记忆系统持有者是「{holder}」。用户说"我"、"我的"时指「{holder}」。
+
+# 当前时间
+{current_date}
+
+# 意图分类
+- **写入**：陈述事实、表达想法、记录经历。非问句默认写入。
+- **查询**：提问、回忆、需要搜索的信息。
+- **优先写入**：不确定时默认写入。
+
+# 信息原子化
+一条 INSERT 只表达一个独立事实。多个事实必须拆成多条 INSERT。
+
+# 六槽格式
+INSERT 的第一个参数：`<scene><subject><action><object><purpose><result>`
+每槽位只填**一个词**：
+- scene: 时间/空间场景(平时/周末/日本/家里等)，无场景用<无>。禁止<所有>
+- subject: 主体，用户说"我"则映射为「{holder}」
+- action: 单字动词(是/有/的/叫/差/来自/喜欢/知道/想/做等)
+- object: 关联对象
+- purpose: 语义类别(名字/身份/关系/经历/年龄差距等)
+- result: purpose 的答案
+
+# 示例
+
+输入："星织的名字是星织"
+→ INSERT INTO memories VALUES ('<无><星织><的><名字><名字><星织>', '星织的名字是星织', {reference_duration})
+
+输入："母亲在日本是战争的受害者"（有地点线索）
+→ INSERT INTO memories VALUES ('<日本><母亲><是><受害者><经历><战争>', '母亲在日本是战争的受害者', {reference_duration})
+
+输入："星织和绯绯是同父异母，只差一岁"
+→ INSERT INTO memories VALUES ('<无><星织><是><同父异母><关系><绯绯>', '星织和绯绯是同父异母的关系', {reference_duration});INSERT INTO memories VALUES ('<无><星织><差><绯绯><年龄差距><一岁>', '星织和绯绯只差一岁', {reference_duration})
+
+输入："我喜欢吃火锅"
+→ INSERT INTO memories VALUES ('<平时><{holder}><喜欢><火锅><喜好><火锅>', '我喜欢吃火锅', {reference_duration})
+
+# 记忆档位
+- permanent: 密码、关键身份
+- long(2592000秒/30天): 重要特征、关系
+- medium(604800秒/7天): 一般事件
+- short(86400秒/1天): 临时想法
+
+# 完整格式示例
+
+用户："帮我记一下明天要开会"
+<writes_mql>INSERT INTO memories VALUES ('<明天><{holder}><做><开会><计划><开会>', '明天要开会', 604800)</writes_mql>
+<queries></queries>
+<lifecycle>medium</lifecycle>
+
+用户："我是一个怎么样的人"
+<writes_mql></writes_mql>
+<queries>{holder}是一个怎么样的人？</queries>
+<lifecycle>short</lifecycle>
+
+# 输出格式（严格遵循）
+<writes_mql>INSERT INTO memories VALUES (...);INSERT INTO memories VALUES (...);...</writes_mql>
+<queries>查询1|查询2|...</queries>
+<lifecycle>permanent|long|medium|short</lifecycle>
+
+- 多条 INSERT 用分号分隔
+- 无写入时<writes_mql></writes_mql>留空
+- 无查询时<queries></queries>留空
+- lifecycle 值用档位名不是秒数
+
+# Input
+用户输入: {query}
+"""
