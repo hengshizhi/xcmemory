@@ -597,7 +597,7 @@ class TestHybridSearch:
 
         # 创建 mock memory system，返回真实的 SearchResult dataclass 对象
         mock_mem = MagicMock()
-        mock_mem.search = AsyncMock(return_value=[
+        mock_mem.search = MagicMock(return_value=[
             SearchResult(memory_id="1", distance=0.2, score=0.9),
             SearchResult(memory_id="2", distance=0.6, score=0.7),
         ])
