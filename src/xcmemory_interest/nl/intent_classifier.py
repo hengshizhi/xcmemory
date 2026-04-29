@@ -96,7 +96,7 @@ class IntentClassifier:
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
-                max_tokens=1024,
+                max_tokens=2048,
             )
             raw = resp.choices[0].message.content or ""
         except Exception as e:
@@ -122,7 +122,27 @@ class IntentClassifier:
         writes = [s.strip() for s in writes_raw.split("|") if s.strip()]
         queries = [s.strip() for s in queries_raw.split("|") if s.strip()]
 
-        # Fallback: LLM 未使用 XML 标签时，将原始输出作为写入陈述
+        # Fallback A: LLM 输出被截断，tags 未闭合（常见于 max_tokens 不够用）
+        if not writes and not queries and raw.strip() and raw.strip().startswith("<"):
+            raw_stripped = raw.strip()
+            # 尝试从截断的 <writes> 中提取非空内容
+            partial = re.search(r"<writes>\s*([\s\S]*?)(?:</writes>|</|$)", raw_stripped)
+            if partial:
+                writes_text = partial.group(1).strip()
+                writes = [s.strip() for s in writes_text.split("|") if s.strip()]
+            # 尝试从截断的 <queries> 中提取
+            partial_q = re.search(r"<queries>\s*([\s\S]*?)(?:</queries>|</|$)", raw_stripped)
+            if partial_q:
+                queries_text = partial_q.group(1).strip()
+                queries = [s.strip() for s in queries_text.split("|") if s.strip()]
+            # 尝试 lifecycle（可能被截断）
+            partial_l = re.search(r"<lifecycle>\s*(\w+)(?:</lifecycle>|</|$)", raw_stripped)
+            if partial_l:
+                lifecycle_raw = partial_l.group(1).strip().lower()
+            if self.debug:
+                print(f"[IntentClassifier DEBUG] truncated fallback: writes={writes}, queries={queries}, lifecycle={lifecycle_raw}")
+
+        # Fallback B: LLM 未使用 XML 标签时，将原始输出作为写入陈述
         if not writes and not queries and raw.strip():
             raw_stripped = raw.strip()
             # 尝试将非标签的纯文本首行作为写入陈述
