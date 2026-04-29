@@ -618,9 +618,13 @@ INSERT INTO memories VALUES ('<六槽查询句>', '内容', reference_duration)
 格式：`<scene><subject><action><object><purpose><result>`
 
 ## 各槽含义
-- **scene**：时间/空间场景。永久性事实用 <所有>，具体时间用日期或 <平时>/<少年期> 等，地点用 <家里>/<公司> 等，无特殊场景用 <无>
-- **subject**：核心角色。"我"→'{holder}'
-- **action**：主体与客体的关系动词。预定义列表：
+- **scene**：时间/空间/社会场景——事件发生的情境背景。只要信息里有场景线索就写，不要轻易省略。如：
+  - 空间场景：<家里><公司><学校><户外><日本><沃尔玛><东京>（任何地点均可，不限于预定义列表）
+  - 时间场景：<平时><少年期><深夜><早上><周末><2026-03-15>
+  - 社会场景：<和哥哥在一起时><和绯绯约会时>
+  - ★重要：场景信息存在于记忆内容中就要填入，不要概括为 <无>。完全无场景线索时才用 <无>
+- **subject**：action 的发出者——谁执行了这个动作？可以是「{holder}」、也可以是其他任何人或实体。陈述句中说"我"时映射为「{holder}」，陈述句说的是其他人就以那个人的名为 subject
+- **action**：主体施加于客体的关系/动作。预定义列表：
   <是><有><与><的><叫><差><来自><喜欢><知道><不知道><想><说><做><同意><拒绝><希望><遵循><发生><发生于>
   无法匹配时用最接近的单字动词
 - **object**：action 的承受者或关联对象
@@ -667,6 +671,10 @@ INSERT INTO memories VALUES ('<六槽查询句>', '内容', reference_duration)
 
 陈述句："星织明天要开会"
 → INSERT INTO memories VALUES ('<明天><星织><做><开会><计划><开会>', '星织明天要开会', {reference_duration})
+
+陈述句："母亲在日本是战争的受害者"
+→ INSERT INTO memories VALUES ('<日本><母亲><是><受害者><经历><战争>', '母亲在日本是战争的受害者', {reference_duration})
+  解读：scene=<日本>（事件发生的地点），subject=<母亲>（陈述的主体是母亲，不是星织）
 
 # 输出格式（严格遵循，每行一条 INSERT）
 <mql>INSERT INTO memories VALUES (...);INSERT INTO memories VALUES (...);...</mql>
