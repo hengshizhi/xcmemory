@@ -112,6 +112,14 @@ class TimeIndex:
         """
         self.sql_db.delete("time_words", {"memory_id": memory_id})
 
+    def remove_batch(self, memory_ids: List[str]):
+        """批量删除时间索引"""
+        if not memory_ids:
+            return
+        placeholders = ",".join("?" for _ in memory_ids)
+        self.sql_db._conn.execute(f"DELETE FROM time_words WHERE memory_id IN ({placeholders})", memory_ids)
+        self.sql_db._conn.commit()
+
     def query_by_range(
         self,
         start: datetime,

@@ -145,6 +145,19 @@ class SlotIndex:
 
         self.sql_db.delete("slot_metadata", {"memory_id": memory_id})
 
+    def remove_batch(self, memory_ids: List[str]):
+        """批量删除槽位索引"""
+        if not memory_ids:
+            return
+        for slot_name in SLOT_NAMES:
+            try:
+                self._slot_collections[slot_name].delete(ids=memory_ids)
+            except Exception:
+                pass
+        placeholders = ",".join("?" for _ in memory_ids)
+        self.sql_db._conn.execute(f"DELETE FROM slot_metadata WHERE memory_id IN ({placeholders})", memory_ids)
+        self.sql_db._conn.commit()
+
     def find_by_word(
         self,
         word: str,

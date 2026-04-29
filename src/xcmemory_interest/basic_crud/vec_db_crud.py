@@ -34,6 +34,7 @@ import chromadb
 from chromadb.config import Settings
 
 from ..embedding_coder import InterestEncoder, QueryEncoderPipeline, QuerySlots, SLOT_NAMES, SLOT_DIM
+from ..config import DEVICE
 
 
 # ============================================================================
@@ -156,7 +157,7 @@ class VecDBCRUD:
         # InterestEncoder + Pipeline
         self.encoder = InterestEncoder(vocab_size=vocab_size, slot_dim=self.SLOT_DIM, num_heads=4, num_layers=2)
         self.encoder.eval()
-        self.pipeline = QueryEncoderPipeline(interest_encoder=self.encoder)
+        self.pipeline = QueryEncoderPipeline(interest_encoder=self.encoder, device=DEVICE)
 
         # Chroma Client
         self._chroma_client = chromadb.PersistentClient(
@@ -226,6 +227,11 @@ class VecDBCRUD:
     def _init_kv_db(self):
         self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA cache_size=-8000")
+        self._conn.execute("PRAGMA temp_store=MEMORY")
+        self._conn.execute("PRAGMA mmap_size=268435456")
         cur = self._conn.cursor()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS memories (
@@ -634,6 +640,111 @@ class VecDBCRUD:
 
         return memory_id
 
+    def write_batch(
+        self,
+        items: List[Dict[str, Any]],
+        embedding_mode: str = EmbeddingMode.INTEREST,
+    ) -> List[str]:
+        """
+        批量写入多条记忆（一次 ChromaDB add 调用完成，远快于逐条写入）。
+
+        Args:
+            items: 记忆列表，每项含 {"query_sentence": str, "content": str, "lifecycle": int}
+            embedding_mode: 嵌入模式
+
+        Returns:
+            memory_id 列表
+        """
+        if not items:
+            return []
+
+        memory_ids = [f"mem_{uuid.uuid4().hex[:12]}" for _ in items]
+        now = datetime.now()
+
+        # 1. 批量编码
+        all_slot_ids = []
+        all_slot_vecs = {s: [] for s in self.SLOT_NAMES}
+        all_interest_vecs = []
+        all_raw_vecs = []
+        all_slot_values = []
+        memories = []
+
+        for item in items:
+            slots = self._slots_from_sentence(item["query_sentence"])
+            interest_vec = self.pipeline.encode(slots, use_raw=False, normalize=True)
+            raw_vec = self.pipeline.encode(slots, use_raw=True, normalize=True)
+            slot_vecs = self.pipeline.get_slot_vectors(slots)
+            parts = self._parse_query_sentence(item["query_sentence"])
+            sv = {name: parts[i] for i, name in enumerate(self.SLOT_NAMES)}
+
+            all_interest_vecs.append(interest_vec)
+            all_raw_vecs.append(raw_vec)
+            all_slot_values.append(sv)
+            for s in self.SLOT_NAMES:
+                all_slot_vecs[s].append(slot_vecs[s].tolist())
+
+        # 2. 批量写入 6 个槽位 Collection（每槽位一次 add 调用）
+        for slot_name in self.SLOT_NAMES:
+            metas = [{slot_name: all_slot_values[i][slot_name], "memory_id": memory_ids[i]} for i in range(len(items))]
+            try:
+                self._slot_collections[slot_name].add(
+                    ids=memory_ids,
+                    embeddings=all_slot_vecs[slot_name],
+                    metadatas=metas,
+                )
+            except Exception:
+                pass
+
+        # 3. 批量写入全量 Collection
+        full_vecs = all_interest_vecs if embedding_mode != EmbeddingMode.RAW else all_raw_vecs
+        full_metas = [{"memory_id": memory_ids[i], **all_slot_values[i]} for i in range(len(items))]
+        try:
+            self._full_collection.add(
+                ids=memory_ids,
+                embeddings=[v.tolist() for v in full_vecs],
+                metadatas=full_metas,
+            )
+        except Exception:
+            pass
+
+        # 4. 批量写入 KV（executemany）
+        cur = self._conn.cursor()
+        kv_rows = []
+        for i in range(len(items)):
+            item = items[i]
+            mid = memory_ids[i]
+            kv_rows.append((
+                mid, item["query_sentence"],
+                all_interest_vecs[i].tobytes(),
+                all_raw_vecs[i].tobytes(),
+                item["content"], item["lifecycle"],
+                now.isoformat(), now.isoformat(), '{}',
+            ))
+        cur.executemany("""
+            INSERT INTO memories (id, query_sentence, query_embedding, raw_embedding, content, lifecycle, created_at, updated_at, extra)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, kv_rows)
+        self._conn.commit()
+
+        # 5. 批量写入槽位值反向索引
+        idx_rows = []
+        for i in range(len(items)):
+            mid = memory_ids[i]
+            item = items[i]
+            sv = all_slot_values[i]
+            idx_rows.append((
+                mid, item["content"],
+                sv.get("scene", ""), sv.get("subject", ""), sv.get("action", ""),
+                sv.get("object", ""), sv.get("purpose", ""), sv.get("result", ""),
+                now.isoformat(), item["lifecycle"],
+            ))
+        cur.executemany("""INSERT OR REPLACE INTO slot_value_index
+            (memory_id, content, scene_value, subject_value, action_value, object_value, purpose_value, result_value, created_at, lifecycle)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", idx_rows)
+        self._conn.commit()
+
+        return memory_ids
+
     # =========================================================================
     # 更新
     # =========================================================================
@@ -687,6 +798,39 @@ class VecDBCRUD:
 
         return ok
 
+    def update_batch(
+        self,
+        updates: List[Dict[str, Any]],
+    ) -> int:
+        """
+        批量更新 lifecycle 和/或 content（一次 SQL 操作完成）。
+
+        Args:
+            updates: [{"memory_id": str, "lifecycle": int, "content": str}, ...]
+                     content 和 lifecycle 都是可选字段
+
+        Returns:
+            成功更新的数量
+        """
+        if not updates:
+            return 0
+        cur = self._conn.cursor()
+        now = datetime.now().isoformat()
+        updated = 0
+        for u in updates:
+            sets, params = ["updated_at = ?"], [now]
+            if "lifecycle" in u and u["lifecycle"] is not None:
+                sets.append("lifecycle = ?")
+                params.append(u["lifecycle"])
+            if "content" in u and u["content"] is not None:
+                sets.append("content = ?")
+                params.append(u["content"])
+            params.append(u["memory_id"])
+            cur.execute(f"UPDATE memories SET {', '.join(sets)} WHERE id = ?", params)
+            updated += cur.rowcount
+        self._conn.commit()
+        return updated
+
     # =========================================================================
     # 删除
     # =========================================================================
@@ -728,6 +872,34 @@ class VecDBCRUD:
         self._delete_slot_value_index(memory_id)
 
         return ok
+
+    def delete_batch(self, memory_ids: List[str]) -> int:
+        """批量删除记忆（一次性批量操作 ChromaDB，远快于逐条删除）"""
+        if not memory_ids:
+            return 0
+
+        # 从 6 个槽位 Collection 批量删除
+        for slot_name in self.SLOT_NAMES:
+            try:
+                self._slot_collections[slot_name].delete(ids=memory_ids)
+            except Exception:
+                pass
+        # 从全量 Collection 批量删除
+        try:
+            self._full_collection.delete(ids=memory_ids)
+        except Exception:
+            pass
+        # 从 KV 批量删除
+        placeholders = ",".join("?" for _ in memory_ids)
+        cur = self._conn.cursor()
+        cur.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", memory_ids)
+        deleted = cur.rowcount
+        self._conn.commit()
+        # 从槽位值索引批量删除
+        cur.execute(f"DELETE FROM slot_value_index WHERE memory_id IN ({placeholders})", memory_ids)
+        self._conn.commit()
+
+        return deleted
 
     # =========================================================================
     # 子空间搜索

@@ -401,24 +401,19 @@ class Interpreter:
                 message=f"Deleted {count} memories (full clear)",
             )
 
-        # 先查询要删除的记忆
+        # 先查询要删除的记忆，再批量删除
         select_result = self._execute_select(SelectStatement(
             fields=["id"],
             conditions=stmt.conditions,
         ))
 
-        deleted = 0
-        deleted_ids = []
-        for row in select_result.data:
-            mid = row["id"]
-            if mem.delete(mid):
-                deleted += 1
-                deleted_ids.append(mid)
+        ids_to_delete = [row["id"] for row in select_result.data]
+        deleted = mem.delete_many(ids_to_delete) if ids_to_delete else 0
 
         return QueryResult(
             type="delete",
             affected_rows=deleted,
-            memory_ids=deleted_ids,
+            memory_ids=ids_to_delete,
             message=f"Deleted {deleted} memories",
         )
 

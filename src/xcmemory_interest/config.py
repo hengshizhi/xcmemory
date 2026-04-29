@@ -7,6 +7,20 @@ SLOT_NAMES = ["scene", "subject", "action", "object", "purpose", "result"]
 NUM_SLOTS = len(SLOT_NAMES)
 SLOT_DIM = 64
 
+
+def _detect_device() -> str:
+    """自动检测最优计算设备。"""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+    except ImportError:
+        pass
+    return "cpu"
+
+
+DEVICE = _detect_device()
+
 # 模型配置
 DEFAULT_CONFIG = {
     "vocab_size": 32000,      # 词汇表大小

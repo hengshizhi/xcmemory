@@ -27,6 +27,7 @@ import numpy as np
 import torch
 
 from ..embedding_coder import InterestEncoder, QueryEncoderPipeline, QuerySlots
+from ..config import DEVICE
 
 
 # ============================================================================
@@ -143,7 +144,7 @@ class BasicCRUD:
             num_layers=2,
         )
         self.encoder.eval()
-        self.pipeline = QueryEncoderPipeline(interest_encoder=self.encoder)
+        self.pipeline = QueryEncoderPipeline(interest_encoder=self.encoder, device=DEVICE)
 
         # KV 数据库（SQLite）
         self.db_path = self.persist_directory / "memory.db"
@@ -157,6 +158,11 @@ class BasicCRUD:
         """初始化 KV 数据库"""
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
+        self.conn.execute("PRAGMA cache_size=-8000")
+        self.conn.execute("PRAGMA temp_store=MEMORY")
+        self.conn.execute("PRAGMA mmap_size=268435456")
         self.cursor = self.conn.cursor()
 
         # 创建表

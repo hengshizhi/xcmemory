@@ -208,6 +208,7 @@ class LifecycleManager:
 
         # Step 2: 遍历每条老记忆，计算并更新其生命周期
         update_details = []
+        batch_updates = []
         for cand in finite_candidates:
             memory_id = cand["memory_id"]
             old_lc = cand["lifecycle"]
@@ -267,10 +268,14 @@ class LifecycleManager:
 
             new_lc = int(max(1, old_lc * (1 - w) + ref_lc * f * w))
 
-            # Step 7: 更新老记忆的生命周期
+            # Step 7: 收集待更新
             if new_lc != old_lc:
-                self.set_memory_lifecycle(memory_id, new_lc)
+                batch_updates.append({"memory_id": memory_id, "lifecycle": new_lc})
                 update_details.append((memory_id, old_lc, new_lc))
+
+        # 批量执行更新
+        if batch_updates:
+            self._vec_db.update_batch(batch_updates)
 
         return update_details
 
@@ -373,6 +378,7 @@ class LifecycleManager:
             interest_duration_accessed = None
 
         update_details = []
+        batch_updates = []
         for cand in finite_candidates:
             old_memory_id = cand["memory_id"]
             old_lc = cand["lifecycle"]
@@ -431,10 +437,14 @@ class LifecycleManager:
                 interim_new_lc=interim_new_lc,
             )
 
-            # Step 9: 更新老记忆的生命周期
+            # Step 9: 收集待更新
             if new_lc != old_lc:
-                self.set_memory_lifecycle(old_memory_id, new_lc)
+                batch_updates.append({"memory_id": old_memory_id, "lifecycle": new_lc})
                 update_details.append((old_memory_id, old_lc, new_lc))
+
+        # 批量执行更新
+        if batch_updates:
+            self._vec_db.update_batch(batch_updates)
 
         return update_details
 
@@ -572,17 +582,15 @@ class LifecycleManager:
         if dry_run:
             return expired_ids
 
-        # 实际删除
-        deleted = []
+        # 实际批量删除
+        self._vec_db.delete_batch(expired_ids)
         for mid in expired_ids:
             try:
-                self._vec_db.delete(mid)
                 self.delete_lifecycle_record(mid)
-                deleted.append(mid)
             except Exception:
                 pass
 
-        return deleted
+        return list(expired_ids)
 
     def check_and_cleanup_all(self, batch_size: int = 100) -> Dict[str, Any]:
         """
@@ -647,11 +655,15 @@ class LifecycleManager:
             else:
                 alive.append(mid)
 
-        # 删除过期的
-        for mid in expired:
+        # 批量删除过期的
+        if expired:
             try:
-                self._vec_db.delete(mid)
-                self.delete_lifecycle_record(mid)
+                self._vec_db.delete_batch(expired)
+                for mid in expired:
+                    try:
+                        self.delete_lifecycle_record(mid)
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -838,12 +850,17 @@ class LifecycleManager:
         }
 
         with torch.no_grad():
+            dev = self._vec_db.encoder.cls_vector.device
+
+            def _to_dev(t):
+                return t.to(dev) if t is not None else None
+
             _, slot_dict_out = self._vec_db.encoder.encode_query_with_ids_slots(
-                scene=slot_values.get("scene"),
-                subject=slot_values.get("subject"),
-                action=slot_values.get("action"),
-                object=slot_values.get("object"),
-                purpose=slot_values.get("purpose"),
+                scene=_to_dev(slot_values.get("scene")),
+                subject=_to_dev(slot_values.get("subject")),
+                action=_to_dev(slot_values.get("action")),
+                object=_to_dev(slot_values.get("object")),
+                purpose=_to_dev(slot_values.get("purpose")),
             )
 
             result = {}
@@ -874,12 +891,17 @@ class LifecycleManager:
         }
 
         with torch.no_grad():
+            dev = self._vec_db.encoder.cls_vector.device
+
+            def _to_dev(t):
+                return t.to(dev) if t is not None else None
+
             _, slot_dict_out = self._vec_db.encoder.encode_query_with_ids_slots(
-                scene=slot_values.get("scene"),
-                subject=slot_values.get("subject"),
-                action=slot_values.get("action"),
-                object=slot_values.get("object"),
-                purpose=slot_values.get("purpose"),
+                scene=_to_dev(slot_values.get("scene")),
+                subject=_to_dev(slot_values.get("subject")),
+                action=_to_dev(slot_values.get("action")),
+                object=_to_dev(slot_values.get("object")),
+                purpose=_to_dev(slot_values.get("purpose")),
             )
 
             result = {}

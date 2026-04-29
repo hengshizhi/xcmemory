@@ -163,25 +163,21 @@ class SnapshotManager:
             (snapshot_id, now.isoformat(), memory_count, trigger_reason),
         )
 
-        # 写入每条记忆的完整数据
+        # 批量写入每条记忆的完整数据
+        rows = []
         for mem in memories:
-            extra_json = json.dumps(mem.extra, ensure_ascii=False)
-            cur.execute(
-                """INSERT INTO snapshot_memories
-                   (snapshot_id, memory_id, query_sentence, content, lifecycle,
-                    created_at, updated_at, extra)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    snapshot_id,
-                    mem.id,
-                    mem.query_sentence,
-                    mem.content,
-                    mem.lifecycle,
-                    mem.created_at.isoformat(),
-                    mem.updated_at.isoformat(),
-                    extra_json,
-                ),
-            )
+            rows.append((
+                snapshot_id, mem.id, mem.query_sentence, mem.content,
+                mem.lifecycle, mem.created_at.isoformat(), mem.updated_at.isoformat(),
+                json.dumps(mem.extra, ensure_ascii=False),
+            ))
+        cur.executemany(
+            """INSERT INTO snapshot_memories
+               (snapshot_id, memory_id, query_sentence, content, lifecycle,
+                created_at, updated_at, extra)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
 
         conn.commit()
 
@@ -248,15 +244,107 @@ class SnapshotManager:
         # 清空当前数据
         self._vec_db.clear()
 
-        # 逐条恢复（如果快照为空则恢复后就是空数据库）
-        for mem_data in memories:
-            self._restore_single_memory(mem_data)
+        # 批量恢复（使用批量写入路径）
+        if memories:
+            items = []
+            for mem_data in memories:
+                items.append({
+                    "query_sentence": mem_data["query_sentence"],
+                    "content": mem_data["content"],
+                    "lifecycle": mem_data["lifecycle"],
+                    "memory_id": mem_data["memory_id"],
+                    "created_at": mem_data.get("created_at", datetime.now().isoformat()),
+                    "updated_at": mem_data.get("updated_at", datetime.now().isoformat()),
+                    "extra": mem_data.get("extra", "{}"),
+                })
+            self._restore_batch(items)
 
         # 重置计数器
         self._pending_count = 0
         self._last_write_time = datetime.now()
 
         return True
+
+    def _restore_batch(self, items: List[Dict[str, Any]]):
+        """批量恢复记忆到数据库（保留原始 ID 和时间戳）"""
+        if not items:
+            return
+
+        now = datetime.now()
+        memory_ids = [item["memory_id"] for item in items]
+
+        # 批量编码
+        all_slot_vecs = {s: [] for s in self._vec_db.SLOT_NAMES}
+        all_interest_vecs = []
+        all_raw_vecs = []
+        all_slot_values = []
+        kv_rows = []
+        idx_rows = []
+
+        for item in items:
+            slots = self._vec_db._slots_from_sentence(item["query_sentence"])
+            interest_vec = self._vec_db.pipeline.encode(slots, use_raw=False, normalize=True)
+            raw_vec = self._vec_db.pipeline.encode(slots, use_raw=True, normalize=True)
+            slot_vecs = self._vec_db.pipeline.get_slot_vectors(slots)
+            parts = self._vec_db._parse_query_sentence(item["query_sentence"])
+            sv = {name: parts[i] for i, name in enumerate(self._vec_db.SLOT_NAMES)}
+
+            all_interest_vecs.append(interest_vec)
+            all_raw_vecs.append(raw_vec)
+            all_slot_values.append(sv)
+            for s in self._vec_db.SLOT_NAMES:
+                all_slot_vecs[s].append(slot_vecs[s].tolist())
+
+            created_at = item.get("created_at", now.isoformat())
+            updated_at = item.get("updated_at", now.isoformat())
+            extra = item.get("extra", "{}")
+
+            kv_rows.append((
+                item["memory_id"], item["query_sentence"],
+                interest_vec.tobytes(), raw_vec.tobytes(),
+                item["content"], item["lifecycle"],
+                created_at, updated_at, extra,
+            ))
+            idx_rows.append((
+                item["memory_id"], item["content"],
+                sv.get("scene", ""), sv.get("subject", ""), sv.get("action", ""),
+                sv.get("object", ""), sv.get("purpose", ""), sv.get("result", ""),
+                created_at, item["lifecycle"],
+            ))
+
+        # 批量写入 6 个槽位 Collection
+        for slot_name in self._vec_db.SLOT_NAMES:
+            metas = [{slot_name: all_slot_values[i][slot_name], "memory_id": memory_ids[i]} for i in range(len(items))]
+            try:
+                self._vec_db._slot_collections[slot_name].add(
+                    ids=memory_ids, embeddings=all_slot_vecs[slot_name], metadatas=metas,
+                )
+            except Exception:
+                pass
+
+        # 批量写入全量 Collection
+        full_metas = [{"memory_id": memory_ids[i], **all_slot_values[i]} for i in range(len(items))]
+        try:
+            self._vec_db._full_collection.add(
+                ids=memory_ids, embeddings=[v.tolist() for v in all_interest_vecs],
+                metadatas=full_metas,
+            )
+        except Exception:
+            pass
+
+        # 批量写入 KV
+        cur = self._vec_db._conn.cursor()
+        cur.executemany("""
+            INSERT INTO memories (id, query_sentence, query_embedding, raw_embedding, content, lifecycle, created_at, updated_at, extra)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, kv_rows)
+        self._vec_db._conn.commit()
+
+        # 批量写入槽位值索引
+        cur.executemany("""INSERT OR REPLACE INTO slot_value_index
+            (memory_id, content, scene_value, subject_value, action_value, object_value, purpose_value, result_value, created_at, lifecycle)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", idx_rows)
+        self._vec_db._conn.commit()
 
     def _restore_single_memory(self, mem_data: Dict[str, Any]):
         """

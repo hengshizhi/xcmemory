@@ -35,6 +35,11 @@ class SQLDatabase:
 
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA cache_size=-8000")
+        self._conn.execute("PRAGMA temp_store=MEMORY")
+        self._conn.execute("PRAGMA mmap_size=268435456")
         self._in_transaction = False  # 事务状态标志
 
     def _auto_commit(self):
@@ -140,11 +145,8 @@ class SQLDatabase:
         col_names = ",".join(columns)
         sql = f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders})"
         cur = self._conn.cursor()
-        # executemany 返回的 rowcount 不准确，需要单独统计
-        total = 0
-        for data in data_list:
-            cur.execute(sql, tuple(data.values()))
-            total += cur.rowcount
+        cur.executemany(sql, [tuple(d.values()) for d in data_list])
+        total = cur.rowcount if cur.rowcount >= 0 else len(data_list)
         self._auto_commit()
         return total
 

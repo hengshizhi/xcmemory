@@ -464,7 +464,7 @@ class MemorySystem:
 
     def delete_many(self, memory_ids: List[str]) -> int:
         """
-        批量删除记忆
+        批量删除记忆（批量操作，远快于逐条删除）
 
         Args:
             memory_ids: 记忆 ID 列表
@@ -473,10 +473,18 @@ class MemorySystem:
             成功删除的数量
         """
         self._check_initialized()
-        count = 0
-        for mid in memory_ids:
-            if self.delete(mid):
-                count += 1
+        if not memory_ids:
+            return 0
+
+        # VecDBCRUD 批量删除（ChromaDB + KV + slot_value_index）
+        count = self._vec_db.delete_batch(memory_ids)
+
+        # 时间索引批量删除
+        self._time_index.remove_batch(memory_ids)
+
+        # 槽位索引批量删除
+        self._slot_index.remove_batch(memory_ids)
+
         return count
 
     # =========================================================================
@@ -775,12 +783,8 @@ class MemorySystem:
         if dry_run:
             return expired_ids
 
-        deleted = []
-        for mid in expired_ids:
-            if self.delete(mid):
-                deleted.append(mid)
-
-        return deleted
+        deleted = self.delete_many(expired_ids)
+        return expired_ids[:deleted] if isinstance(deleted, int) else expired_ids
 
     def cleanup_expired(self, batch_size: int = 100) -> Dict[str, int]:
         """

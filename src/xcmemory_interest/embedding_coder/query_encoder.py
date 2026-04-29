@@ -72,7 +72,7 @@ class QueryEncoderPipeline:
             device: 计算设备
         """
         self.device = device
-        self.encoder = interest_encoder
+        self.encoder = interest_encoder.to(device)
         self.encoder.eval()
 
     def encode(
@@ -107,12 +107,14 @@ class QueryEncoderPipeline:
                 vector = self.encoder.encode_raw(token_ids)
             else:
                 # 兴趣嵌入：经过自注意力处理
+                def _to_dev(t):
+                    return t.to(self.device) if t is not None else None
                 query_slots = {
-                    "scene": slot_dict.get("scene"),
-                    "subject": slot_dict.get("subject"),
-                    "action": slot_dict.get("action"),
-                    "object": slot_dict.get("object"),
-                    "purpose": slot_dict.get("purpose"),
+                    "scene": _to_dev(slot_dict.get("scene")),
+                    "subject": _to_dev(slot_dict.get("subject")),
+                    "action": _to_dev(slot_dict.get("action")),
+                    "object": _to_dev(slot_dict.get("object")),
+                    "purpose": _to_dev(slot_dict.get("purpose")),
                 }
                 vector = self.encoder.encode_query_with_ids(**query_slots)
 
@@ -155,6 +157,7 @@ class QueryEncoderPipeline:
                 if tensor is not None:
                     if tensor.dim() == 1:
                         tensor = tensor.unsqueeze(0)
+                    tensor = tensor.to(self.device)
                     emb = self.encoder.slot_embeddings[slot](tensor)
                     vec = emb.mean(dim=1).squeeze(0).cpu().numpy()  # [64]
                 else:
@@ -162,22 +165,14 @@ class QueryEncoderPipeline:
                 raw_vectors[slot] = vec
 
             # 经注意力处理后的向量
-            query_slots = {
-                "scene": slot_dict.get("scene"),
-                "subject": slot_dict.get("subject"),
-                "action": slot_dict.get("action"),
-                "object": slot_dict.get("object"),
-                "purpose": slot_dict.get("purpose"),
-            }
-            # 需要用特殊方式获取中间结果，这里用 encode_query_with_ids
-            # 它的输出顺序是 scene, subject, action, object, purpose, result (6个槽位)
-            # 但 encode_query 只处理前5个槽位
+            def _to_dev(t):
+                return t.to(self.device) if t is not None else None
             full_query_slots = {
-                "scene": slot_dict.get("scene"),
-                "subject": slot_dict.get("subject"),
-                "action": slot_dict.get("action"),
-                "object": slot_dict.get("object"),
-                "purpose": slot_dict.get("purpose"),
+                "scene": _to_dev(slot_dict.get("scene")),
+                "subject": _to_dev(slot_dict.get("subject")),
+                "action": _to_dev(slot_dict.get("action")),
+                "object": _to_dev(slot_dict.get("object")),
+                "purpose": _to_dev(slot_dict.get("purpose")),
             }
             final_vector = self.encoder.encode_query_with_ids(**full_query_slots)
             final_vector = final_vector.cpu().numpy()
@@ -217,7 +212,9 @@ class QueryEncoderPipeline:
             if tensor is not None:
                 # 支持 numpy 数组和 torch 张量
                 if isinstance(tensor, np.ndarray):
-                    tensor = torch.from_numpy(tensor)
+                    tensor = torch.from_numpy(tensor).to(self.device)
+                else:
+                    tensor = tensor.to(self.device)
                 # 确保是 2D 张量 [batch=1, seq_len]
                 if tensor.dim() == 1:
                     tensor = tensor.unsqueeze(0)
@@ -238,12 +235,12 @@ class QueryEncoderPipeline:
                 # 填充到最大长度
                 seq_len = t.shape[1]
                 if seq_len < max_len:
-                    padding = torch.full((1, max_len - seq_len), pad_token_id, dtype=torch.long)
+                    padding = torch.full((1, max_len - seq_len), pad_token_id, dtype=torch.long, device=self.device)
                     t = torch.cat([t, padding], dim=1)
                 token_ids_list.append(t)
             else:
                 # 全 PAD
-                token_ids_list.append(torch.full((1, max_len), pad_token_id, dtype=torch.long))
+                token_ids_list.append(torch.full((1, max_len), pad_token_id, dtype=torch.long, device=self.device))
 
         return torch.cat(token_ids_list, dim=0)  # [6, max_len]
 
@@ -291,6 +288,7 @@ class QueryEncoderPipeline:
                     # 确保是 2D 张量 [batch=1, seq_len]
                     if tensor.dim() == 1:
                         tensor = tensor.unsqueeze(0)
+                    tensor = tensor.to(self.device)
                     emb = self.encoder.slot_embeddings[slot](tensor)
                     vec = emb.mean(dim=1).squeeze(0).cpu().numpy()  # [64]
                 else:
