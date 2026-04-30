@@ -21,7 +21,7 @@
 
 ```bash
 git clone https://github.com/hengshizhi/xcmemory.git
-cd xcmemory_interest-main
+cd xcmemory
 python install.py
 ```
 
