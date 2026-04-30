@@ -10,6 +10,7 @@
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import AsyncIterator, Optional
 
@@ -144,6 +145,7 @@ class ChatEngine:
     # ── 构建扮演 messages ──────────────────────────────────
 
     def _build_messages(self, user_input: str, memory_context: str) -> list[dict]:
+        now = datetime.now().strftime("%Y年%m月%d日 %H:%M")
         template = ONBOARDING_SYSTEM_TEMPLATE if self._is_onboarding else ROLEPLAY_SYSTEM_TEMPLATE
         messages = [
             {
@@ -151,6 +153,7 @@ class ChatEngine:
                 "content": template.format(
                     name=self.character.name,
                     user_name=self.user_name,
+                    now=now,
                     card=self.character.get_system_prompt_section(),
                     memory=memory_context or "无",
                 ),
@@ -185,7 +188,6 @@ class ChatEngine:
             async for token in self.llm.stream(messages):
                 full_reply += token
                 yield ChatEvent(type=EventType.REPLY_SEGMENT, text=token)
-                yield ChatEvent(type=EventType.REPLY_SEGMENT, text=full_reply)
         except Exception as e:
             yield ChatEvent(type=EventType.ERROR, text=f"LLM 错误: {e}")
         yield ChatEvent(type=EventType.REPLY_END)

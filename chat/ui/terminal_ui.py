@@ -81,7 +81,6 @@ class TerminalUI:
             await self._handle_chat(user_input)
 
     async def _handle_chat(self, user_input: str):
-        think_parts = []
         reply_parts = []
 
         try:
@@ -92,21 +91,7 @@ class TerminalUI:
                     self.console.print(f"  [dim green]📋 {event.text}[/dim green]")
                 elif event.type == EventType.MEMORY_SAVE:
                     self.console.print(f"  [dim yellow]💾 {event.text}[/dim yellow]")
-                elif event.type == EventType.THINK_START:
-                    think_parts.clear()
-                elif event.type == EventType.THINK_SEGMENT:
-                    think_parts.append(event.text)
-                elif event.type == EventType.THINK_END:
-                    if think_parts:
-                        self.console.print()
-                        self.console.print(
-                            Panel(
-                                Text("".join(think_parts), style="dim italic"),
-                                title=f"[{self.character.avatar}] {self.character.name}的思考",
-                                border_style="dim",
-                                padding=(0, 1),
-                            )
-                        )
+                elif event.type == EventType.REPLY_SEGMENT:
                     reply_parts.append(event.text)
                 elif event.type == EventType.REPLY_END:
                     if reply_parts:
