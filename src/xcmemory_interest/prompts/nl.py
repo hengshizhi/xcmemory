@@ -785,14 +785,41 @@ REGENERATE_MQL_PROMPT = """# Task
 # 反思审查的提示
 {reflection_hint}
 
+# ★★★ 重查核心策略：从精确到宽松逐级降级 ★★★
+
+重查时按照以下优先级递进放宽，不要重复生成与上次相同的 MQL：
+
+## 第一级：放宽槽位匹配 → 跨槽位关键词搜索
+如果上次 MQL 把关键字限定在特定槽位（如 WHERE subject='XX'、purpose='XX'），
+且检索结果太少或不相关，改为**跨槽位裸字符串搜索**：
+  - 错误：SELECT * FROM memories WHERE subject='绯绯' LIMIT 10
+  - 正确：SELECT * FROM memories WHERE '绯绯' LIMIT 20
+  - 原理：不限定槽位，在全部 6 个槽位中搜索该关键词，覆盖范围更广
+
+## 第二级：增加 LIMIT
+  - 上次 LIMIT 10 → 改为 LIMIT 20 或 LIMIT 30
+  - 上次无 LIMIT → 加上 LIMIT 20
+
+## 第三级：去掉不必要的过滤条件
+  - 去掉 TIME 过滤（除非用户明确指定了时间）
+  - 去掉 scene 限制
+  - 去掉非核心的槽位条件，只保留最关键的 1-2 个关键词
+
+## 第四级：如果还是不够 → 去掉所有 WHERE 条件，改为全库语义搜索
+  - SELECT * FROM memories SEARCH TOPK 10
+  - 用 SEARCH + 用户问题的核心关键词做向量语义搜索
+
+## 多关键词场景
+如果问题涉及多个主题，用跨槽位 AND 语法：
+  - SELECT * FROM memories WHERE '关键字1' AND '关键字2' LIMIT 20
+  - 例如：SELECT * FROM memories WHERE '慢慢来' AND '哥哥' AND '恋人' LIMIT 20
+
 # 重查要求
 1. 仔细分析反思提示，理解问题所在
-2. 结合用户原始问题，生成更合适的 MQL
-3. 可以调整 subject/object/limit 等条件
-4. 如果反思提示说"内容太少"，可以增加 LIMIT 或去掉严格限制
-5. 如果反思提示说"应该查XX方面"，需要在 MQL 中体现这个方向
-6. 必须生成合法的 MQL 语句
-7. 涉及相对时间词时，根据当前时间换算为绝对年份/月份/日期
+2. 结合用户原始问题，按上述策略递进放宽条件
+3. **严禁生成与上次相同的 MQL**，必须体现出放宽策略
+4. 必须生成合法的 MQL 语句
+5. 涉及相对时间词时，根据当前时间换算为绝对年份/月份/日期
 
 # ★★★ 当前时间参考 ★★★
 当前时间：{current_date}

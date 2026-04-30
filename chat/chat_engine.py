@@ -87,6 +87,8 @@ class ChatEngine:
             known_text = "\n".join(f"- {k}" for k in self.known_memories) if self.known_memories else "（无）"
             paraphrase = await self.llm.complete([
                 {"role": "user", "content": PARAPHRASE_PROMPT.format(
+                    character_name=self.character.name,
+                    user_name=self.user_name,
                     query=user_input, known=known_text)},
             ])
             paraphrase = paraphrase.strip()
@@ -105,6 +107,8 @@ class ChatEngine:
         # Step 1: 生成查询
         queries_text = await self.llm.complete([
             {"role": "user", "content": QUERY_GEN_PROMPT.format(
+                user_name=self.user_name,
+                character_name=self.character.name,
                 context=context, known=known_text, query=user_input)},
         ])
         queries_text = queries_text.strip()
@@ -136,6 +140,8 @@ class ChatEngine:
         known_text = "\n".join(f"- {k}" for k in self.known_memories) if self.known_memories else "（无）"
         paraphrase = await self.llm.complete([
             {"role": "user", "content": PARAPHRASE_PROMPT.format(
+                character_name=self.character.name,
+                user_name=self.user_name,
                 query=user_input, known=known_text)},
         ])
         paraphrase = paraphrase.strip()
