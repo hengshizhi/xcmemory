@@ -200,9 +200,9 @@ class ChatEngine:
 
         # 3. 记忆写入
         reply_text = full_reply.strip()
-        conversation = f"{self.user_name}: {user_input}\n{self.character.name}: {reply_text}"
+        conversation = f"{self.user_name}: {user_input}\n我: {reply_text}"
         facts_text = await self.llm.complete([
-            {"role": "user", "content": EXTRACT_FACTS_PROMPT.format(conversation=conversation)},
+            {"role": "user", "content": EXTRACT_FACTS_PROMPT.format(user_name=self.user_name, conversation=conversation)},
         ])
         facts = [f.strip() for f in facts_text.split("\n") if f.strip() and f.strip() != "无"]
         if facts:

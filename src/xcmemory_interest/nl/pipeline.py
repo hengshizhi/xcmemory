@@ -394,6 +394,11 @@ class NLPipeline:
                 final_response = nl_response
                 break
 
+            # ★ GRAPH 查询已做最大努力，不再重查
+            if "GRAPH" in state["mql"].upper():
+                final_response = nl_response
+                break
+
             reflection_hint = review.get("hint", "")
             if retry_count > self.max_retries:
                 final_response = nl_response

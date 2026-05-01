@@ -97,9 +97,9 @@ class MQLGenerator:
         """
         # topk 提示：-1 表示由 LLM 自行决定；正数时告知 LLM 限制数量
         if topk is None or topk < 0:
-            topk_hint = "（结果数量由你根据查询的宽泛程度自行判断，不在MQL中写死LIMIT）"
+            topk_hint = "（优先使用 TOPK n 按匹配度排序，探索性问题用 TOPK 20~30，具体查询用 TOPK 5~15）"
         else:
-            topk_hint = f"（请在MQL的LIMIT子句中使用 {topk} 作为结果数量上限）"
+            topk_hint = f"（请在MQL中使用 TOPK {topk} 作为结果数量上限）"
 
         from datetime import datetime, timedelta
         now = datetime.now()

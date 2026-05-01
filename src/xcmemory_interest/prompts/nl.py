@@ -61,6 +61,13 @@ INTENT_CLASSIFY_PROMPT = """# Task
   - 结果/补充用 result 槽位
 - **查询句需要有一定的发散思维**：如果用户没有指定查询什么，可以从上下文推导可能需要的信息
 
+## 5. ★反向关系补全（提升检索效率）★
+对于**非对称关系**（有方向性的关系），在写入时自动补全反向关系的陈述句：
+- "A是B的哥哥" → 同时写入 "A是B的哥哥" | "B是A的弟弟/妹妹"
+- "A比B大三岁" → 同时写入 "A比B大三岁" | "B比A小三岁"
+- "A是B的父亲" → 同时写入 "A是B的父亲" | "B是A的儿子/女儿"
+- 目的：无论从哪个方向查询（"A是谁的哥哥"或"B的哥哥是谁"），都能命中
+
 ## 3. 陈述句格式
 - 写入句：直接陈述，如"星织打算去沃尔玛购物"、"星织觉得慢慢来很重要"
 - 查询句：问句形式，如"星织的购物习惯是什么？"、"星织平时需要买什么？"
@@ -115,7 +122,7 @@ INTENT_CLASSIFY_PROMPT = """# Task
 <lifecycle>short</lifecycle>
 
 用户："我是星织，有个哥哥叫绯绯，同父异母，只差一岁"
-<writes>星织的名字是星织|星织有个哥哥叫绯绯|星织和绯绯是同父异母的关系|星织和绯绯只差一岁</writes>
+<writes>星织的名字是星织|星织有个哥哥叫绯绯|绯绯有个妹妹（星织）|星织和绯绯是同父异母的关系|星织和绯绯只差一岁</writes>
 <queries></queries>
 <lifecycle>long</lifecycle>
 
@@ -207,6 +214,19 @@ SELECT * FROM memories WHERE [slot=value,...] [SEARCH TOPK n] [TIME year(...) AN
 # 结果数量
 {topk_hint}
 
+# ★★★ TOPK vs LIMIT 选择规则 ★★★
+- **TOPK n**：按向量语义匹配度排序后取前 n 条 → **首选**，确保返回最相关的结果
+- **LIMIT n**：不排序直接截断前 n 条 → 仅在不关心相关度排序时用
+- ★**默认规则：所有查询优先使用 TOPK，不要单独使用 LIMIT**★
+  - ✅ 正确：`WHERE subject='{holder}' TOPK 10`
+  - ❌ 避免：`WHERE subject='{holder}' LIMIT 10`
+  - 两者可共存：`WHERE subject='{holder}' TOPK 20 LIMIT 10`（先排序再截断）
+- ★**探索性/综合类问题加大 TOPK**★：
+  - 日常具体查询：TOPK 5~15
+  - 人格分析/自我认知："我是一个什么样的人" → TOPK 30 或 GRAPH
+  - 关系探索/经历总结：TOPK 20~30 或 GRAPH
+  - 多维度全面了解："关于我的一切" → TOPK 30 或 GRAPH
+
 # ★★★ GRAPH 图扩展语法（重要！★★★）
 对于综合性、人格分析、关系探索类查询，使用 GRAPH 关键字做多跳关联扩展。
 
@@ -218,19 +238,19 @@ SELECT * FROM memories WHERE [slot=value,...] [SEARCH TOPK n] [TIME year(...) AN
 5. **深层追问**（当前面查询结果少于3条时再用）：在基础查询后加 GRAPH EXPAND(HOPS 2)
 
 ## ★何时不用 GRAPH（反面教材）★ —— 这是新手常犯的错误！
-以下情况**不要**用 GRAPH，只用普通 WHERE + LIMIT：
+以下情况**不要**用 GRAPH，只用普通 WHERE + TOPK：
 1. **日常习惯/行为查询**："我平时会干嘛"、"我平时喜欢做什么"、"我有哪些日常习惯"
    - 错误：SELECT * FROM memories WHERE subject='{holder}' GRAPH EXPAND(HOPS 2)（结果太杂，混入无关记忆）
-   - 正确：SELECT * FROM memories WHERE subject='{holder}' LIMIT 15（直接返回相关记忆）
+   - 正确：SELECT * FROM memories WHERE subject='{holder}' TOPK 15（按匹配度排序返回）
 2. **具体话题回忆**："我记得关于Python的事"、"我和哥哥做过什么"  
    - 错误：GRAPH EXPAND（会扩散到无关领域）
-   - 正确：SELECT * FROM memories WHERE subject='{holder}' AND object='Python' LIMIT 10
+   - 正确：SELECT * FROM memories WHERE subject='{holder}' AND object='Python' TOPK 10
 3. **身份/定义类问句**："哥哥是谁"、"XX是做什么的"
    - 错误：GRAPH EXPAND（这是简单事实查询）
-   - 正确：SELECT * FROM memories WHERE '关键词' LIMIT 5
+   - 正确：SELECT * FROM memories WHERE '关键词' TOPK 5
 4. **兴趣爱好查询**："我喜欢什么"、"我的兴趣爱好"
    - 错误：GRAPH EXPAND（太泛，结果太多太杂）
-   - 正确：SELECT * FROM memories WHERE [subject='{holder}', purpose='喜欢'] LIMIT 10 或 SELECT * FROM memories WHERE subject='{holder}' LIMIT 15
+   - 正确：SELECT * FROM memories WHERE [subject='{holder}', purpose='喜欢'] TOPK 10 或 SELECT * FROM memories WHERE subject='{holder}' TOPK 15
 
 ## GRAPH 操作类型
 - **GRAPH EXPAND(HOPS n)**：从种子记忆出发，扩展 n 跳邻居（推荐 HOPS 2）
@@ -239,10 +259,10 @@ SELECT * FROM memories WHERE [slot=value,...] [SEARCH TOPK n] [TIME year(...) AN
 - **GRAPH NEIGHBORS(MIN_SHARED m)**：获取直接相邻记忆
 
 ## GRAPH 使用示例（正面）
-- "我是一个怎么样的人" → SELECT * FROM memories WHERE subject='{holder}' GRAPH EXPAND(HOPS 2) LIMIT 20
-- "关于我的一切" → SELECT * FROM memories WHERE subject='{holder}' GRAPH CONNECTED(MIN_SHARED 2) LIMIT 30
+- "我是一个怎么样的人" → SELECT * FROM memories WHERE subject='{holder}' GRAPH EXPAND(HOPS 2) TOPK 20
+- "关于我的一切" → SELECT * FROM memories WHERE subject='{holder}' GRAPH CONNECTED(MIN_SHARED 2) TOPK 30
 - "我的性格" → SELECT * FROM memories WHERE [subject='{holder}', purpose='性格'] GRAPH EXPAND(HOPS 2)
-- "我和家人的关系" → SELECT * FROM memories WHERE [subject='{holder}', object='家'] GRAPH EXPAND(HOPS 1)
+- "我和家人的关系" → SELECT * FROM memories WHERE [subject='{holder}', object='家'] GRAPH EXPAND(HOPS 1) TOPK 20
 
 # ★★★ 当前时间（重要！生成 TIME 时必须参考此信息）★★★
 当前时间：{current_date}
@@ -321,28 +341,29 @@ TIME/TOPK/LIMIT 按书写顺序执行：
 
 ## 身份/定义问句（特殊处理）：
 - "XX是谁" / "XX是做什么的" → **不是 subject='{holder}'**，而是跨槽位搜索
-  - "哥哥是谁" → WHERE '哥哥' LIMIT 5（在任意槽位搜索含"哥哥"关键词的记忆）
-  - "XX是做什么的" → WHERE subject='{holder}' AND object='XX' LIMIT 5
-- "XX是什么/怎么样" 且 XX 是具体人名/实体 → 跨槽位：WHERE 'XX' LIMIT 5
+  - "哥哥是谁" → WHERE '哥哥' TOPK 5（在任意槽位搜索含"哥哥"关键词的记忆）
+  - "XX是做什么的" → WHERE subject='{holder}' AND object='XX' TOPK 5
+- "XX是什么/怎么样" 且 XX 是具体人名/实体 → 跨槽位：WHERE 'XX' TOPK 5
 
 ## 低优先级（明确指定了他者才用）：
 - "查找XX的记忆" 且 XX 是具体人名 → subject='XX'
 - "XX和YY的记忆" → subject='XX'
 
 # 示例（★每条MQL必须以 SELECT * FROM memories 开头★）
-- "关于Python的记忆" → SELECT * FROM memories WHERE subject='{holder}' AND object='Python'
-- "查询我关于Python的记忆" → SELECT * FROM memories WHERE subject='{holder}' AND object='Python'
-- "我是一个怎么样的人" → SELECT * FROM memories WHERE subject='{holder}' GRAPH EXPAND(HOPS 2) LIMIT 20
-- "我想学Python" → SELECT * FROM memories WHERE [subject='{holder}', action='学', object='Python']
-- "我平时会干嘛" → SELECT * FROM memories WHERE subject='{holder}' LIMIT 15（不用 GRAPH！）
-- "哥哥是谁" → SELECT * FROM memories WHERE '哥哥' LIMIT 5（不用 GRAPH！跨槽位搜索身份相关记忆）
-- "2024年的记忆" → SELECT * FROM memories WHERE subject='{holder}' TIME year(2024)
-- "去年1-3月发生的事" → SELECT * FROM memories WHERE subject='{holder}' TIME year(2025) AND month(01 TO 03)
-- "晚上的记忆" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(18:00 TO 23:59)
-- "平时晚上的习惯" → SELECT * FROM memories WHERE scene='平时' AND subject='{holder}'（scene 槽位匹配，非 TIME 过滤）
-- "我白天做过什么" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(06:00 TO 18:00)
-- "星织昨天做了什么" → SELECT * FROM memories WHERE subject='星织' TIME year({current_year}) AND month({current_month}) AND day({prev_day})
-- "昨天做了什么" → SELECT * FROM memories WHERE subject='{holder}' TIME year({current_year}) AND month({current_month}) AND day({prev_day})
+- "关于Python的记忆" → SELECT * FROM memories WHERE subject='{holder}' AND object='Python' TOPK 10
+- "查询我关于Python的记忆" → SELECT * FROM memories WHERE subject='{holder}' AND object='Python' TOPK 10
+- "我是一个怎么样的人" → SELECT * FROM memories WHERE subject='{holder}' GRAPH EXPAND(HOPS 2) TOPK 20
+- "我想学Python" → SELECT * FROM memories WHERE [subject='{holder}', action='学', object='Python'] TOPK 10
+- "我平时会干嘛" → SELECT * FROM memories WHERE subject='{holder}' TOPK 15（不用 GRAPH！）
+- "哥哥是谁" → SELECT * FROM memories WHERE '哥哥' TOPK 5（不用 GRAPH！跨槽位搜索身份相关记忆）
+- "2024年的记忆" → SELECT * FROM memories WHERE subject='{holder}' TIME year(2024) TOPK 10
+- "去年1-3月发生的事" → SELECT * FROM memories WHERE subject='{holder}' TIME year(2025) AND month(01 TO 03) TOPK 10
+- "晚上的记忆" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(18:00 TO 23:59) TOPK 10
+- "白天发生过什么" → SELECT * FROM memories WHERE subject='{holder}' TIME clock(06:00 TO 18:00) TOPK 10
+- "平时晚上的习惯" → SELECT * FROM memories WHERE scene='平时' AND subject='{holder}' TOPK 10（scene 槽位匹配，非 TIME 过滤）
+- "昨天做了什么" → SELECT * FROM memories WHERE subject='{holder}' TIME year({current_year}) AND month({current_month}) AND day({prev_day}) TOPK 10
+- "星织昨天做了什么" → SELECT * FROM memories WHERE subject='星织' TIME year({current_year}) AND month({current_month}) AND day({prev_day}) TOPK 10
+- "前天的事" → SELECT * FROM memories WHERE subject='{holder}' TIME year({current_year}) AND month({current_month}) AND day({prev2_day}) TOPK 10
 
 # ★★★ 跨槽位多关键字搜索（重要！★★★）
 当用户询问**同时涉及多个主题或关键字**的记忆时，使用 bare string 跨槽位 AND 语法：
@@ -361,9 +382,9 @@ TIME/TOPK/LIMIT 按书写顺序执行：
    - "有没有提到某本书或某个人的记忆？"
 
 ## 跨槽位语法示例
-- "既提到恋人又提到哥哥的记忆" → SELECT * FROM memories WHERE '恋人' AND '哥哥' LIMIT 20
-- "关于慢慢来、牵手、哥哥的记忆" → SELECT * FROM memories WHERE '慢慢来' AND '牵手' AND '哥哥' LIMIT 20
-- "星织相关的记忆中，哪些也提到了血缘" → SELECT * FROM memories WHERE subject='星织' AND '血缘' LIMIT 20
+- "既提到恋人又提到哥哥的记忆" → SELECT * FROM memories WHERE '恋人' AND '哥哥' TOPK 20
+- "关于慢慢来、牵手、哥哥的记忆" → SELECT * FROM memories WHERE '慢慢来' AND '牵手' AND '哥哥' TOPK 20
+- "星织相关的记忆中，哪些也提到了血缘" → SELECT * FROM memories WHERE subject='星织' AND '血缘' TOPK 20
 
 # ★★★ 禁止语法（重要！违反会导致语法错误！）★★️
 
@@ -792,13 +813,13 @@ REGENERATE_MQL_PROMPT = """# Task
 ## 第一级：放宽槽位匹配 → 跨槽位关键词搜索
 如果上次 MQL 把关键字限定在特定槽位（如 WHERE subject='XX'、purpose='XX'），
 且检索结果太少或不相关，改为**跨槽位裸字符串搜索**：
-  - 错误：SELECT * FROM memories WHERE subject='绯绯' LIMIT 10
-  - 正确：SELECT * FROM memories WHERE '绯绯' LIMIT 20
+  - 错误：SELECT * FROM memories WHERE subject='绯绯' TOPK 10
+  - 正确：SELECT * FROM memories WHERE '绯绯' TOPK 20
   - 原理：不限定槽位，在全部 6 个槽位中搜索该关键词，覆盖范围更广
 
-## 第二级：增加 LIMIT
-  - 上次 LIMIT 10 → 改为 LIMIT 20 或 LIMIT 30
-  - 上次无 LIMIT → 加上 LIMIT 20
+## 第二级：增加 TOPK / LIMIT
+  - 上次 TOPK 10 → 改为 TOPK 20 或 TOPK 30
+  - 上次无数量限制 → 加上 TOPK 20
 
 ## 第三级：去掉不必要的过滤条件
   - 去掉 TIME 过滤（除非用户明确指定了时间）
@@ -811,8 +832,8 @@ REGENERATE_MQL_PROMPT = """# Task
 
 ## 多关键词场景
 如果问题涉及多个主题，用跨槽位 AND 语法：
-  - SELECT * FROM memories WHERE '关键字1' AND '关键字2' LIMIT 20
-  - 例如：SELECT * FROM memories WHERE '慢慢来' AND '哥哥' AND '恋人' LIMIT 20
+  - SELECT * FROM memories WHERE '关键字1' AND '关键字2' TOPK 20
+  - 例如：SELECT * FROM memories WHERE '慢慢来' AND '哥哥' AND '恋人' TOPK 20
 
 # 重查要求
 1. 仔细分析反思提示，理解问题所在
