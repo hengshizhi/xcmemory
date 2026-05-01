@@ -20,8 +20,8 @@
 ### 一键安装
 
 ```bash
-git clone <repo-url> xcmemory_interest
-cd xcmemory_interest
+git clone https://github.com/hengshizhi/xcmemory.git
+cd xcmemory
 python install.py
 ```
 
